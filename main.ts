@@ -31,6 +31,10 @@ namespace AIcamera {
     let faceSimilarityCache = 0;
     let faceBlinkCache = 0;
     let faceMouthOpenCache = 0;
+    let faceLeftTopXCache = 0;
+    let faceLeftTopYCache = 0;
+    let faceRightBottomXCache = 0;
+    let faceRightBottomYCache = 0;
     let faceLabelCache = "";
 
     let selfLearnStatusCache = 0;
@@ -103,6 +107,21 @@ namespace AIcamera {
         State4 = 4,
     }
 
+    export enum FaceCoordinate {
+        //% block="center x"
+        CenterX = 0,
+        //% block="center y"
+        CenterY = 1,
+        //% block="left top x"
+        LeftTopX = 2,
+        //% block="left top y"
+        LeftTopY = 3,
+        //% block="right bottom x"
+        RightBottomX = 4,
+        //% block="right bottom y"
+        RightBottomY = 5,
+    }
+
     let currentMode: AppMode = AppMode.Launcher;
 
     function minNumber(a: number, b: number): number {
@@ -159,6 +178,13 @@ namespace AIcamera {
             out[i] = buf[offset + i];
         }
         return out.toString();
+    }
+
+    function u16le(buf: Buffer, offset: number): number {
+        if (!buf || offset < 0 || offset + 1 >= buf.length) {
+            return 0;
+        }
+        return ((buf[offset + 1] & 0xFF) << 8) | (buf[offset] & 0xFF);
     }
 
     function crc8(data: Buffer, length: number): number {
@@ -425,7 +451,7 @@ namespace AIcamera {
     }
 
     function parseFacePacket(raw: Buffer): boolean {
-        if (!raw || raw.length < 6) {
+        if (!raw || raw.length < 14) {
             return false;
         }
 
@@ -434,10 +460,14 @@ namespace AIcamera {
         faceSimilarityCache = minNumber((raw[2] & 0xFF) / 100.0, 1.0);
         faceBlinkCache = raw[3] & 0xFF;
         faceMouthOpenCache = raw[4] & 0xFF;
+        faceLeftTopXCache = u16le(raw, 5);
+        faceLeftTopYCache = u16le(raw, 7);
+        faceRightBottomXCache = u16le(raw, 9);
+        faceRightBottomYCache = u16le(raw, 11);
 
-        const labelLen = raw[5] & 0xFF;
-        if (labelLen > 0 && raw.length >= 6 + labelLen) {
-            faceLabelCache = utf8DecodePart(raw, 6, labelLen);
+        const labelLen = raw[13] & 0xFF;
+        if (labelLen > 0 && raw.length >= 14 + labelLen) {
+            faceLabelCache = utf8DecodePart(raw, 14, labelLen);
         } else {
             faceLabelCache = "";
         }
@@ -508,13 +538,13 @@ namespace AIcamera {
     }
 
     function refreshFaceResultInternal(): boolean {
-        const head = regReadRetry(REG_RESULT_BASE, 6, 2);
-        if (!head || head.length < 6) {
+        const head = regReadRetry(REG_RESULT_BASE, 14, 2);
+        if (!head || head.length < 14) {
             return false;
         }
 
-        const labelLen = head[5] & 0xFF;
-        const totalLen = 6 + labelLen;
+        const labelLen = head[13] & 0xFF;
+        const totalLen = 14 + labelLen;
         const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
         return parseFacePacket(raw);
     }
@@ -675,6 +705,42 @@ namespace AIcamera {
     //% group="Face"
     export function faceMouthOpen(): number {
         return faceMouthOpenCache;
+    }
+
+    //% block="face coordinate %coord"
+    //% weight=72
+    //% group="Face"
+    export function faceCoordinate(coord: FaceCoordinate): number {
+        if (coord == FaceCoordinate.CenterX) {
+            let x = ((faceLeftTopXCache + faceRightBottomXCache) >> 1) - 160;
+            if (x < -160) {
+                x = -160;
+            }
+            if (x > 160) {
+                x = 160;
+            }
+            return x;
+        }
+        if (coord == FaceCoordinate.CenterY) {
+            let y = ((faceLeftTopYCache + faceRightBottomYCache) >> 1) - 120;
+            if (y < -120) {
+                y = -120;
+            }
+            if (y > 120) {
+                y = 120;
+            }
+            return y;
+        }
+        if (coord == FaceCoordinate.LeftTopX) {
+            return faceLeftTopXCache;
+        }
+        if (coord == FaceCoordinate.LeftTopY) {
+            return faceLeftTopYCache;
+        }
+        if (coord == FaceCoordinate.RightBottomX) {
+            return faceRightBottomXCache;
+        }
+        return faceRightBottomYCache;
     }
 
     //% block="refresh self learn result"
