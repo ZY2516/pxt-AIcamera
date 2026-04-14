@@ -1,6 +1,6 @@
 {
     "name": "pxt-aicamera",
-    "version": "0.0.0",
+    "version": "0.0.1",
     "description": "LingLong AI camera MakeCode extension (no-auth app set)",
     "dependencies": {
         "core": "*",
