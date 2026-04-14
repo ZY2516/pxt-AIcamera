@@ -26,8 +26,6 @@ namespace AIcamera {
     let ioChunk = 10;
     let ioGapMs = 10;
 
-    let currentMode: AppMode = AppMode.Launcher;
-
     let faceStatusCache = 0;
     let faceIdCache = 0;
     let faceSimilarityCache = 0;
@@ -104,6 +102,8 @@ namespace AIcamera {
         //% block="state 4"
         State4 = 4,
     }
+
+    let currentMode: AppMode = AppMode.Launcher;
 
     function minNumber(a: number, b: number): number {
         return a < b ? a : b;
