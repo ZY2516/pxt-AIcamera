@@ -550,6 +550,7 @@ namespace AIcamera {
 
     //% block="set device i2c address %addr"
     //% addr.min=1 addr.max=127 addr.defl=96
+    //% blockHidden=1
     //% weight=110
     //% group="Config"
     export function setDeviceI2CAddress(addr: number): void {
@@ -558,6 +559,7 @@ namespace AIcamera {
 
     //% block="set i2c address %addr"
     //% addr.min=1 addr.max=127 addr.defl=96
+    //% blockHidden=1
     //% weight=108
     //% group="Config"
     export function setI2CAddress(addr: number): void {
@@ -567,6 +569,7 @@ namespace AIcamera {
     //% block="set io chunk %chunk gap %gap ms"
     //% chunk.min=1 chunk.max=32 chunk.defl=10
     //% gap.min=0 gap.max=100 gap.defl=10
+    //% blockHidden=1
     //% weight=109
     //% group="Config"
     export function setIOTuning(chunk: number, gap: number): void {
@@ -575,6 +578,7 @@ namespace AIcamera {
     }
 
     //% block="current app mode"
+    //% blockHidden=1
     //% weight=100
     //% group="Config"
     export function getCurrentMode(): AppMode {
@@ -584,48 +588,51 @@ namespace AIcamera {
     //% block="switch to %mode"
     //% weight=90
     //% group="App"
-    export function switchTo(mode: AppMode): boolean {
-        return switchModeInternal(mode, 3, 6000);
+    export function switchTo(mode: AppMode): void {
+        switchModeInternal(mode, 3, 6000);
     }
 
     //% block="switch to launcher"
     //% weight=89
     //% group="App"
-    export function backToLauncher(): boolean {
-        return switchModeInternal(AppMode.Launcher, 2, 5000);
+    export function backToLauncher(): void {
+        switchModeInternal(AppMode.Launcher, 2, 5000);
     }
 
     //% block="set rgb %color"
     //% weight=88
     //% group="App"
-    export function setRgb(color: RgbColor): boolean {
-        return sendUartCommandArray(UART_CMD_RGB_CONTROL, [color as number]);
+    export function setRgb(color: RgbColor): void {
+        sendUartCommandArray(UART_CMD_RGB_CONTROL, [color as number]);
     }
 
     //% block="refresh result"
     //% weight=80
     //% group="Result"
-    export function refreshResult(): boolean {
+    export function refreshResult(): void {
         if (currentMode == AppMode.FaceRecognize) {
-            return refreshFaceResultInternal();
+            refreshFaceResultInternal();
+            return;
         }
         if (currentMode == AppMode.SelfLearn) {
-            return refreshSelfLearnResultInternal();
+            refreshSelfLearnResultInternal();
+            return;
         }
         if (currentMode == AppMode.HandRecognize) {
-            return refreshHandResultInternal();
+            refreshHandResultInternal();
+            return;
         }
         if (currentMode == AppMode.SoundTouch) {
-            return refreshSoundTouchResultInternal();
+            refreshSoundTouchResultInternal();
+            return;
         }
-        return false;
     }
 
     //% block="refresh face result"
     //% weight=79
     //% group="Face"
-    export function refreshFaceResult(): boolean {
-        return refreshFaceResultInternal();
+    export function refreshFaceResult(): void {
+        refreshFaceResultInternal();
     }
 
     //% block="face status"
@@ -673,8 +680,8 @@ namespace AIcamera {
     //% block="refresh self learn result"
     //% weight=70
     //% group="Self Learn"
-    export function refreshSelfLearnResult(): boolean {
-        return refreshSelfLearnResultInternal();
+    export function refreshSelfLearnResult(): void {
+        refreshSelfLearnResultInternal();
     }
 
     //% block="self learn status"
@@ -708,8 +715,8 @@ namespace AIcamera {
     //% block="refresh hand result"
     //% weight=60
     //% group="Hand"
-    export function refreshHandResult(): boolean {
-        return refreshHandResultInternal();
+    export function refreshHandResult(): void {
+        refreshHandResultInternal();
     }
 
     //% block="hand status"
@@ -751,10 +758,10 @@ namespace AIcamera {
     //% upload.defl=true
     //% weight=50
     //% group="Sound Touch"
-    export function sendSoundTouchPath(path: string, upload: boolean): boolean {
+    export function sendSoundTouchPath(path: string, upload: boolean): void {
         const text = ("" + path).trim();
         if (!text) {
-            return false;
+            return;
         }
 
         const body = utf8Encode(text);
@@ -776,30 +783,29 @@ namespace AIcamera {
             basic.pause(30);
             sendUartCommandArray(UART_CMD_SOUND_TOUCH_UPLOAD, [0x01]);
         }
-        return ok;
     }
 
     //% block="sound touch record %enable"
     //% enable.defl=true
     //% weight=49
     //% group="Sound Touch"
-    export function soundTouchRecord(enable: boolean): boolean {
+    export function soundTouchRecord(enable: boolean): void {
         const cmd = enable ? SOUND_CTRL_CMD_START : SOUND_CTRL_CMD_STOP;
-        return sendUartCommandArray(UART_CMD_SOUND_TOUCH_CTRL, [cmd]);
+        sendUartCommandArray(UART_CMD_SOUND_TOUCH_CTRL, [cmd]);
     }
 
     //% block="sound touch upload"
     //% weight=48
     //% group="Sound Touch"
-    export function soundTouchUpload(): boolean {
-        return sendUartCommandArray(UART_CMD_SOUND_TOUCH_UPLOAD, [0x01]);
+    export function soundTouchUpload(): void {
+        sendUartCommandArray(UART_CMD_SOUND_TOUCH_UPLOAD, [0x01]);
     }
 
     //% block="refresh sound touch result"
     //% weight=47
     //% group="Sound Touch"
-    export function refreshSoundTouchResult(): boolean {
-        return refreshSoundTouchResultInternal();
+    export function refreshSoundTouchResult(): void {
+        refreshSoundTouchResultInternal();
     }
 
     //% block="sound touch status"
@@ -838,6 +844,7 @@ namespace AIcamera {
     }
 
     //% block="mode name %mode"
+    //% blockHidden=1
     //% weight=10
     //% group="Advanced"
     export function appModeName(mode: AppMode): string {
@@ -847,6 +854,7 @@ namespace AIcamera {
     //% block="raw reg read addr %addr len %len"
     //% addr.min=0 addr.max=65535 addr.defl=100
     //% len.min=1 len.max=64 len.defl=8
+    //% blockHidden=1
     //% weight=9
     //% group="Advanced"
     export function rawReadRegister(addr: number, len: number): Buffer {
@@ -856,6 +864,7 @@ namespace AIcamera {
 
     //% block="raw reg write addr %addr data %data"
     //% addr.min=0 addr.max=65535 addr.defl=100
+    //% blockHidden=1
     //% weight=8
     //% group="Advanced"
     export function rawWriteRegister(addr: number, data: Buffer): boolean {
