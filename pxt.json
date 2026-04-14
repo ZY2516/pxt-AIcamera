@@ -1,7 +1,7 @@
 {
     "name": "pxt-aicamera",
     "version": "0.0.0",
-    "description": "",
+    "description": "LingLong AI camera MakeCode extension (no-auth app set)",
     "dependencies": {
         "core": "*",
         "radio": "*",
@@ -9,8 +9,9 @@
     },
     "files": [
         "README.md",
-        "main.blocks",
-        "main.ts"
+        "main.ts",
+        "_locales/zh/AIcamera-strings.json",
+        "_locales/pl/AIcamera-strings.json"
     ],
     "testFiles": [
         "test.ts"

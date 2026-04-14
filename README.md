@@ -1,24 +1,54 @@
+# AIcamera (MakeCode Extension)
 
-> 在 [https://zy2516.github.io/pxt-aicamera/](https://zy2516.github.io/pxt-aicamera/) 打开此页面
+AIcamera is an I2C extension for LingLong AI camera control in MakeCode.
 
-## 用作扩展
+## Scope (no-auth app set only)
 
-此仓库可以作为 **插件** 添加到 MakeCode 中。
+Implemented app modes:
 
-* 打开 [https://makecode.microbit.org/](https://makecode.microbit.org/)
-* 点击 **新项目**
-* 点击齿轮图标菜单下的 **扩展**
-* 搜索 **https://github.com/zy2516/pxt-aicamera** 并导入
+- `launcher (0x01)`
+- `face recognize (0x10)`
+- `self learn (0x11)`
+- `hand recognize (0x12)`
+- `remote file manager (0x13)`
+- `photos (0x14)`
+- `camera (0x15)`
+- `settings (0x16)`
+- `sound touch (0x1B)`
 
-## 编辑此项目
+Not included by design (auth/SN-key related set):
 
-在 MakeCode 中编辑此仓库。
+- picture recognition
+- realtime model chat
+- realtime voice dialog
+- sound recognize
+- voice to text
+- text to voice
 
-* 打开 [https://makecode.microbit.org/](https://makecode.microbit.org/)
-* 点击 **导入**，然后点击 **导入 URL**
-* 粘贴 **https://github.com/zy2516/pxt-aicamera** 并点击导入
+## Protocol baseline
 
-#### 元数据（用于搜索、渲染）
+This extension follows the `u_device` packet style on I2C device address `0x60`:
 
-* for PXT/microbit
-<script src="https://makecode.com/gh-pages-embed.js"></script><script>makeCodeRender("{{ site.makecode.home_url }}", "{{ site.github.owner_name }}/{{ site.github.repository_name }}");</script>
+- outer packet: `[0xAA, cmd, param_len, params..., crc8]`
+- register write cmd: `0x20`
+- register read cmd: `0x21`
+- UART tunnel cmd: `0x30`
+
+UART tunnel payload uses reference `FF F9` frames internally.
+
+## Use in MakeCode
+
+1. Open https://makecode.microbit.org/
+2. New project -> Extensions
+3. Import this repository URL
+
+## Basic usage idea
+
+1. Set camera device I2C address (`set device i2c address`), default `0x60`
+2. Switch app (`switch to ...`)
+3. Call `refresh result` (or mode-specific refresh)
+4. Read fields from corresponding getter blocks
+
+## Metadata
+
+for PXT/microbit
