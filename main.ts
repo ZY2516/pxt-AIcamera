@@ -55,7 +55,7 @@ namespace AIcamera {
     let soundTouchMessageCache = "";
 
     export enum AppMode {
-        //% block="launcher"
+        //% block="main menu"
         Launcher = 0x01,
         //% block="face recognize"
         FaceRecognize = 0x10,
@@ -396,7 +396,7 @@ namespace AIcamera {
 
     function modeName(mode: AppMode): string {
         if (mode == AppMode.Launcher) {
-            return "launcher";
+            return "main menu";
         }
         if (mode == AppMode.FaceRecognize) {
             return "face";
@@ -423,6 +423,57 @@ namespace AIcamera {
             return "sound touch";
         }
         return "unknown";
+    }
+
+    function updateCurrentModeById(appId: number): boolean {
+        const id = appId & 0xFF;
+        if (id == (AppMode.Launcher as number)) {
+            currentMode = AppMode.Launcher;
+            return true;
+        }
+        if (id == (AppMode.FaceRecognize as number)) {
+            currentMode = AppMode.FaceRecognize;
+            return true;
+        }
+        if (id == (AppMode.SelfLearn as number)) {
+            currentMode = AppMode.SelfLearn;
+            return true;
+        }
+        if (id == (AppMode.HandRecognize as number)) {
+            currentMode = AppMode.HandRecognize;
+            return true;
+        }
+        if (id == (AppMode.RemoteFileManager as number)) {
+            currentMode = AppMode.RemoteFileManager;
+            return true;
+        }
+        if (id == (AppMode.Photos as number)) {
+            currentMode = AppMode.Photos;
+            return true;
+        }
+        if (id == (AppMode.Camera as number)) {
+            currentMode = AppMode.Camera;
+            return true;
+        }
+        if (id == (AppMode.Settings as number)) {
+            currentMode = AppMode.Settings;
+            return true;
+        }
+        if (id == (AppMode.SoundTouch as number)) {
+            currentMode = AppMode.SoundTouch;
+            return true;
+        }
+        return false;
+    }
+
+    function detectModeIdFromDevice(): number {
+        const cur = regReadRetry(REG_APP_ID, 1, 2);
+        if (cur && cur.length >= 1) {
+            const id = cur[0] & 0xFF;
+            updateCurrentModeById(id);
+            return id;
+        }
+        return currentMode as number;
     }
 
     function switchModeInternal(mode: AppMode, retryAfterFirst: number = 3, timeoutMs: number = 6000): boolean {
@@ -623,6 +674,7 @@ namespace AIcamera {
     }
 
     //% block="switch to launcher"
+    //% blockHidden=1
     //% weight=89
     //% group="App"
     export function backToLauncher(): void {
@@ -640,25 +692,27 @@ namespace AIcamera {
     //% weight=80
     //% group="Result"
     export function refreshResult(): void {
-        if (currentMode == AppMode.FaceRecognize) {
+        const modeId = detectModeIdFromDevice();
+        if (modeId == (AppMode.FaceRecognize as number)) {
             refreshFaceResultInternal();
             return;
         }
-        if (currentMode == AppMode.SelfLearn) {
+        if (modeId == (AppMode.SelfLearn as number)) {
             refreshSelfLearnResultInternal();
             return;
         }
-        if (currentMode == AppMode.HandRecognize) {
+        if (modeId == (AppMode.HandRecognize as number)) {
             refreshHandResultInternal();
             return;
         }
-        if (currentMode == AppMode.SoundTouch) {
+        if (modeId == (AppMode.SoundTouch as number)) {
             refreshSoundTouchResultInternal();
             return;
         }
     }
 
     //% block="refresh face result"
+    //% blockHidden=1
     //% weight=79
     //% group="Face"
     export function refreshFaceResult(): void {
@@ -719,6 +773,9 @@ namespace AIcamera {
             if (x > 160) {
                 x = 160;
             }
+            if (x == -160) {
+                return 0;
+            }
             return x;
         }
         if (coord == FaceCoordinate.CenterY) {
@@ -728,6 +785,9 @@ namespace AIcamera {
             }
             if (y > 120) {
                 y = 120;
+            }
+            if (y == -120) {
+                return 0;
             }
             return y;
         }
@@ -744,6 +804,7 @@ namespace AIcamera {
     }
 
     //% block="refresh self learn result"
+    //% blockHidden=1
     //% weight=70
     //% group="Self Learn"
     export function refreshSelfLearnResult(): void {
@@ -779,6 +840,7 @@ namespace AIcamera {
     }
 
     //% block="refresh hand result"
+    //% blockHidden=1
     //% weight=60
     //% group="Hand"
     export function refreshHandResult(): void {
@@ -868,6 +930,7 @@ namespace AIcamera {
     }
 
     //% block="refresh sound touch result"
+    //% blockHidden=1
     //% weight=47
     //% group="Sound Touch"
     export function refreshSoundTouchResult(): void {

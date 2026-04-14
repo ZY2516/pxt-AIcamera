@@ -1,5 +1,5 @@
 {
-    "AIcamera.AppMode.Launcher|block": "启动器",
+    "AIcamera.AppMode.Launcher|block": "主菜单",
     "AIcamera.AppMode.FaceRecognize|block": "人脸识别",
     "AIcamera.AppMode.SelfLearn|block": "自学习",
     "AIcamera.AppMode.HandRecognize|block": "手势识别",
@@ -75,7 +75,7 @@
     "{id:group}Hand": "手势",
     "{id:group}Sound Touch": "节奏识别",
     "{id:group}Advanced": "高级",
-    "aicamera.AppMode.Launcher|block": "启动器",
+    "aicamera.AppMode.Launcher|block": "主菜单",
     "aicamera.AppMode.FaceRecognize|block": "人脸识别",
     "aicamera.AppMode.SelfLearn|block": "自学习",
     "aicamera.AppMode.HandRecognize|block": "手势识别",
