@@ -31,6 +31,7 @@ namespace AIcamera {
     let faceSimilarityCache = 0;
     let faceBlinkCache = 0;
     let faceMouthOpenCache = 0;
+    let faceCoordValidCache = 0;
     let faceLeftTopXCache = 0;
     let faceLeftTopYCache = 0;
     let faceRightBottomXCache = 0;
@@ -502,7 +503,7 @@ namespace AIcamera {
     }
 
     function parseFacePacket(raw: Buffer): boolean {
-        if (!raw || raw.length < 14) {
+        if (!raw || raw.length < 15) {
             return false;
         }
 
@@ -511,14 +512,30 @@ namespace AIcamera {
         faceSimilarityCache = minNumber((raw[2] & 0xFF) / 100.0, 1.0);
         faceBlinkCache = raw[3] & 0xFF;
         faceMouthOpenCache = raw[4] & 0xFF;
-        faceLeftTopXCache = u16le(raw, 5);
-        faceLeftTopYCache = u16le(raw, 7);
-        faceRightBottomXCache = u16le(raw, 9);
-        faceRightBottomYCache = u16le(raw, 11);
+        const coordValid = raw[5] & 0xFF;
+        const nextLeftTopX = u16le(raw, 6);
+        const nextLeftTopY = u16le(raw, 8);
+        const nextRightBottomX = u16le(raw, 10);
+        const nextRightBottomY = u16le(raw, 12);
+        const isDegenerateBox = nextLeftTopX == nextRightBottomX && nextLeftTopY == nextRightBottomY;
 
-        const labelLen = raw[13] & 0xFF;
-        if (labelLen > 0 && raw.length >= 14 + labelLen) {
-            faceLabelCache = utf8DecodePart(raw, 14, labelLen);
+        if (isDegenerateBox) {
+            faceCoordValidCache = 0;
+        } else {
+            if (coordValid != 0) {
+                faceLeftTopXCache = nextLeftTopX;
+                faceLeftTopYCache = nextLeftTopY;
+                faceRightBottomXCache = nextRightBottomX;
+                faceRightBottomYCache = nextRightBottomY;
+                faceCoordValidCache = 1;
+            } else {
+                faceCoordValidCache = 0;
+            }
+        }
+
+        const labelLen = raw[14] & 0xFF;
+        if (labelLen > 0 && raw.length >= 15 + labelLen) {
+            faceLabelCache = utf8DecodePart(raw, 15, labelLen);
         } else {
             faceLabelCache = "";
         }
@@ -589,13 +606,13 @@ namespace AIcamera {
     }
 
     function refreshFaceResultInternal(): boolean {
-        const head = regReadRetry(REG_RESULT_BASE, 14, 2);
-        if (!head || head.length < 14) {
+        const head = regReadRetry(REG_RESULT_BASE, 15, 2);
+        if (!head || head.length < 15) {
             return false;
         }
 
-        const labelLen = head[13] & 0xFF;
-        const totalLen = 14 + labelLen;
+        const labelLen = head[14] & 0xFF;
+        const totalLen = 15 + labelLen;
         const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
         return parseFacePacket(raw);
     }
@@ -666,7 +683,7 @@ namespace AIcamera {
         return currentMode;
     }
 
-    //% block="switch to %mode"
+    //% block="switch function to %mode"
     //% weight=90
     //% group="App"
     export function switchTo(mode: AppMode): void {
@@ -688,7 +705,7 @@ namespace AIcamera {
         sendUartCommandArray(UART_CMD_RGB_CONTROL, [color as number]);
     }
 
-    //% block="refresh result"
+    //% block="refresh recognize result"
     //% weight=80
     //% group="Result"
     export function refreshResult(): void {
@@ -761,33 +778,60 @@ namespace AIcamera {
         return faceMouthOpenCache;
     }
 
-    //% block="face coordinate %coord"
+    //% block="detected face"
     //% weight=72
+    //% group="Face"
+    export function detectedUnrecognizedFace(): boolean {
+        return faceCoordValidCache != 0;
+    }
+
+    //% block="detected recognized face"
+    //% weight=71
+    //% group="Face"
+    export function detectedRecognizedFace(): boolean {
+        return faceStatusCache == 1;
+    }
+
+    function hasValidFaceCenterData(): boolean {
+        if (faceCoordValidCache == 0) {
+            return false;
+        }
+        return !(faceLeftTopXCache == faceRightBottomXCache && faceLeftTopYCache == faceRightBottomYCache);
+    }
+
+    //% block="face coordinate %coord"
+    //% weight=70
     //% group="Face"
     export function faceCoordinate(coord: FaceCoordinate): number {
         if (coord == FaceCoordinate.CenterX) {
-            let x = ((faceLeftTopXCache + faceRightBottomXCache) >> 1) - 160;
-            if (x < -160) {
-                x = -160;
+            if (!hasValidFaceCenterData()) {
+                return 160;
             }
-            if (x > 160) {
-                x = 160;
+            let x = (faceLeftTopXCache + faceRightBottomXCache) >> 1;
+            if (x < 0) {
+                x = 0;
             }
-            if (x == -160) {
-                return 0;
+            if (x > 320) {
+                x = 320;
+            }
+            if (x == 0 || x == 320) {
+                return 160;
             }
             return x;
         }
         if (coord == FaceCoordinate.CenterY) {
-            let y = ((faceLeftTopYCache + faceRightBottomYCache) >> 1) - 120;
-            if (y < -120) {
-                y = -120;
+            if (!hasValidFaceCenterData()) {
+                return 120;
             }
-            if (y > 120) {
-                y = 120;
+            let y = 240 - ((faceLeftTopYCache + faceRightBottomYCache) >> 1);
+            if (y < 0) {
+                y = 0;
             }
-            if (y == -120) {
-                return 0;
+            if (y > 240) {
+                y = 240;
+            }
+            if (y == 0 || y == 240) {
+                return 120;
             }
             return y;
         }
@@ -839,6 +883,13 @@ namespace AIcamera {
         return selfLearnSimilarityCache;
     }
 
+    //% block="detected learned object"
+    //% weight=65
+    //% group="Self Learn"
+    export function detectedLearnedObject(): boolean {
+        return selfLearnStatusCache == 1;
+    }
+
     //% block="refresh hand result"
     //% blockHidden=1
     //% weight=60
@@ -880,6 +931,13 @@ namespace AIcamera {
     //% group="Hand"
     export function handPoseSimilarity(): number {
         return handPoseSimilarityCache;
+    }
+
+    //% block="detected learned gesture"
+    //% weight=54
+    //% group="Hand"
+    export function detectedLearnedGesture(): boolean {
+        return handStatusCache == 1;
     }
 
     //% block="send sound touch path %path auto upload %upload"
