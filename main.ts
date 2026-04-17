@@ -20,6 +20,9 @@ namespace AIcamera {
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
+    const INIT_IIC_MAX_RETRY = 3;
+    const INIT_IIC_ATTEMPT_TIMEOUT_MS = 300;
+    const INIT_IIC_POLL_INTERVAL_MS = 20;
 
     let deviceAddr = UDEV_DEVICE_ADDR_DEFAULT;
 
@@ -490,6 +493,30 @@ namespace AIcamera {
         return false;
     }
 
+    function probeCameraWithTimeout(attemptTimeoutMs: number): boolean {
+        const timeout = maxNumber(1, attemptTimeoutMs | 0);
+        const interval = maxNumber(1, INIT_IIC_POLL_INTERVAL_MS | 0);
+        const deadline = input.runningTime() + timeout;
+
+        while (input.runningTime() < deadline) {
+            if (probeCamera(1)) {
+                return true;
+            }
+            basic.pause(interval);
+        }
+        return false;
+    }
+
+    function probeCameraInit(): boolean {
+        for (let i = 0; i < INIT_IIC_MAX_RETRY; i++) {
+            if (probeCameraWithTimeout(INIT_IIC_ATTEMPT_TIMEOUT_MS)) {
+                return true;
+            }
+        }
+        markCameraOffline();
+        return false;
+    }
+
     function detectModeIdFromDevice(): number {
         if (!isCameraReady()) {
             return currentMode as number;
@@ -728,7 +755,7 @@ namespace AIcamera {
         deviceAddr = UDEV_DEVICE_ADDR_DEFAULT;
         iicInitDone = true;
         cameraOnline = false;
-        probeCamera(2);
+        probeCameraInit();
     }
 
     //% block="set device i2c address %addr"
@@ -774,6 +801,9 @@ namespace AIcamera {
     //% weight=90
     //% group="App"
     export function switchTo(mode: AppMode): void {
+        if (!isCameraReady()) {
+            return;
+        }
         switchModeInternal(mode, 3, 6000);
     }
 
@@ -782,6 +812,9 @@ namespace AIcamera {
     //% weight=89
     //% group="App"
     export function backToLauncher(): void {
+        if (!isCameraReady()) {
+            return;
+        }
         switchModeInternal(AppMode.Launcher, 2, 5000);
     }
 
