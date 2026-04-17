@@ -24,7 +24,9 @@ namespace AIcamera {
     let deviceAddr = UDEV_DEVICE_ADDR_DEFAULT;
 
     let ioChunk = 10;
-    let ioGapMs = 10;
+    let ioGapMs = 1;
+    let iicInitDone = false;
+    let cameraOnline = false;
 
     let faceStatusCache = 0;
     let faceIdCache = 0;
@@ -360,7 +362,7 @@ namespace AIcamera {
         return partial;
     }
 
-    function regWriteBytes(addr: number, data: Buffer, chunkSize: number = 10, gapMs: number = 10): boolean {
+    function regWriteBytes(addr: number, data: Buffer, chunkSize: number = 10, gapMs: number = 1): boolean {
         if (!data || data.length <= 0) {
             return false;
         }
@@ -467,30 +469,104 @@ namespace AIcamera {
         return false;
     }
 
+    function markCameraOffline(): void {
+        cameraOnline = false;
+    }
+
+    function isCameraReady(): boolean {
+        return iicInitDone && cameraOnline;
+    }
+
+    function probeCamera(retry: number = 2): boolean {
+        const cur = regReadRetry(REG_APP_ID, 1, retry);
+        if (cur && cur.length >= 1) {
+            const id = cur[0] & 0xFF;
+            if (updateCurrentModeById(id)) {
+                cameraOnline = true;
+                return true;
+            }
+        }
+        markCameraOffline();
+        return false;
+    }
+
     function detectModeIdFromDevice(): number {
+        if (!isCameraReady()) {
+            return currentMode as number;
+        }
+
         const cur = regReadRetry(REG_APP_ID, 1, 2);
         if (cur && cur.length >= 1) {
             const id = cur[0] & 0xFF;
-            updateCurrentModeById(id);
-            return id;
+            if (updateCurrentModeById(id)) {
+                cameraOnline = true;
+                return id;
+            }
         }
+        markCameraOffline();
         return currentMode as number;
     }
 
+    function tryReadModeId(retry: number = 2): number {
+        if (!isCameraReady()) {
+            return -1;
+        }
+
+        const cur = regReadRetry(REG_APP_ID, 1, retry);
+        if (cur && cur.length >= 1) {
+            const id = cur[0] & 0xFF;
+            if (updateCurrentModeById(id)) {
+                cameraOnline = true;
+                return id;
+            }
+        }
+        markCameraOffline();
+        return -1;
+    }
+
     function switchModeInternal(mode: AppMode, retryAfterFirst: number = 3, timeoutMs: number = 6000): boolean {
+        if (!isCameraReady()) {
+            return false;
+        }
+
         const target = mode as number;
         const totalAttempts = 1 + maxNumber(0, retryAfterFirst | 0);
 
+        // 已在目标模式时直接返回，避免重复切换导致阻塞。
+        const currentId = tryReadModeId(2);
+        if (currentId == (target & 0xFF)) {
+            currentMode = mode;
+            return true;
+        }
+
+        // 读取失败时回退到缓存模式，降低"已在目标模式但卡住等待"的概率。
+        if (currentId < 0 && ((currentMode as number) & 0xFF) == (target & 0xFF)) {
+            return true;
+        }
+
         for (let attempt = 0; attempt < totalAttempts; attempt++) {
-            sendUartCommandArray(target, [0]);
+            if (!sendUartCommandArray(target, [0])) {
+                markCameraOffline();
+                return false;
+            }
             const deadline = input.runningTime() + timeoutMs;
+            let missCount = 0;
 
             while (input.runningTime() < deadline) {
                 basic.pause(20);
-                const cur = regReadRetry(REG_APP_ID, 1, 2);
-                if (cur && cur.length >= 1 && (cur[0] & 0xFF) == (target & 0xFF)) {
+                const id = tryReadModeId(1);
+                if (id == (target & 0xFF)) {
                     currentMode = mode;
                     return true;
+                }
+                if (id < 0) {
+                    missCount += 1;
+                    if (missCount >= 3) {
+                        markCameraOffline();
+                        return false;
+                    }
+                } else {
+                    missCount = 0;
                 }
             }
 
@@ -532,7 +608,6 @@ namespace AIcamera {
                 faceCoordValidCache = 0;
             }
         }
-
         const labelLen = raw[14] & 0xFF;
         if (labelLen > 0 && raw.length >= 15 + labelLen) {
             faceLabelCache = utf8DecodePart(raw, 15, labelLen);
@@ -646,6 +721,16 @@ namespace AIcamera {
         return parseSoundTouchPacket(raw);
     }
 
+    //% block="IIC 初始化AI摄像头"
+    //% weight=111
+    //% group="Config"
+    export function iicInitCamera(): void {
+        deviceAddr = UDEV_DEVICE_ADDR_DEFAULT;
+        iicInitDone = true;
+        cameraOnline = false;
+        probeCamera(2);
+    }
+
     //% block="set device i2c address %addr"
     //% addr.min=1 addr.max=127 addr.defl=96
     //% blockHidden=1
@@ -653,6 +738,8 @@ namespace AIcamera {
     //% group="Config"
     export function setDeviceI2CAddress(addr: number): void {
         deviceAddr = normalizeAddr7(addr);
+        iicInitDone = false;
+        cameraOnline = false;
     }
 
     //% block="set i2c address %addr"
@@ -666,7 +753,7 @@ namespace AIcamera {
 
     //% block="set io chunk %chunk gap %gap ms"
     //% chunk.min=1 chunk.max=32 chunk.defl=10
-    //% gap.min=0 gap.max=100 gap.defl=10
+    //% gap.min=0 gap.max=100 gap.defl=1
     //% blockHidden=1
     //% weight=109
     //% group="Config"
@@ -702,6 +789,9 @@ namespace AIcamera {
     //% weight=88
     //% group="App"
     export function setRgb(color: RgbColor): void {
+        if (!isCameraReady()) {
+            return;
+        }
         sendUartCommandArray(UART_CMD_RGB_CONTROL, [color as number]);
     }
 
@@ -709,6 +799,9 @@ namespace AIcamera {
     //% weight=80
     //% group="Result"
     export function refreshResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
         const modeId = detectModeIdFromDevice();
         if (modeId == (AppMode.FaceRecognize as number)) {
             refreshFaceResultInternal();
@@ -733,6 +826,9 @@ namespace AIcamera {
     //% weight=79
     //% group="Face"
     export function refreshFaceResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
         refreshFaceResultInternal();
     }
 
@@ -852,6 +948,9 @@ namespace AIcamera {
     //% weight=70
     //% group="Self Learn"
     export function refreshSelfLearnResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
         refreshSelfLearnResultInternal();
     }
 
@@ -895,6 +994,9 @@ namespace AIcamera {
     //% weight=60
     //% group="Hand"
     export function refreshHandResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
         refreshHandResultInternal();
     }
 
@@ -945,6 +1047,9 @@ namespace AIcamera {
     //% weight=50
     //% group="Sound Touch"
     export function sendSoundTouchPath(path: string, upload: boolean): void {
+        if (!isCameraReady()) {
+            return;
+        }
         const text = ("" + path).trim();
         if (!text) {
             return;
@@ -976,6 +1081,9 @@ namespace AIcamera {
     //% weight=49
     //% group="Sound Touch"
     export function soundTouchRecord(enable: boolean): void {
+        if (!isCameraReady()) {
+            return;
+        }
         const cmd = enable ? SOUND_CTRL_CMD_START : SOUND_CTRL_CMD_STOP;
         sendUartCommandArray(UART_CMD_SOUND_TOUCH_CTRL, [cmd]);
     }
@@ -984,6 +1092,9 @@ namespace AIcamera {
     //% weight=48
     //% group="Sound Touch"
     export function soundTouchUpload(): void {
+        if (!isCameraReady()) {
+            return;
+        }
         sendUartCommandArray(UART_CMD_SOUND_TOUCH_UPLOAD, [0x01]);
     }
 
@@ -992,6 +1103,9 @@ namespace AIcamera {
     //% weight=47
     //% group="Sound Touch"
     export function refreshSoundTouchResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
         refreshSoundTouchResultInternal();
     }
 
@@ -1045,6 +1159,9 @@ namespace AIcamera {
     //% weight=9
     //% group="Advanced"
     export function rawReadRegister(addr: number, len: number): Buffer {
+        if (!isCameraReady()) {
+            return pins.createBuffer(0);
+        }
         const n = minNumber(maxNumber(1, len | 0), 64);
         return regReadRetry(addr | 0, n, 2);
     }
@@ -1055,6 +1172,9 @@ namespace AIcamera {
     //% weight=8
     //% group="Advanced"
     export function rawWriteRegister(addr: number, data: Buffer): boolean {
+        if (!isCameraReady()) {
+            return false;
+        }
         return regWriteBytes(addr | 0, data, ioChunk, ioGapMs);
     }
 }
