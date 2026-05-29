@@ -15,6 +15,7 @@ Implemented app modes:
 - `camera (0x15)`
 - `settings (0x16)`
 - `sound touch (0x1B)`
+- `ball recognition (0x1E)`
 
 Not included by design (auth/SN-key related set):
 

@@ -20,6 +20,9 @@ namespace AIcamera {
 
     const REG_APP_ID = 0;
     const REG_RESULT_BASE = 100;
+    const BALL_RESULT_HEAD_LEN = 2;
+    const BALL_TARGET_STRIDE = 10;
+    const BALL_MAX_TARGETS = 16;
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -55,6 +58,7 @@ namespace AIcamera {
     let cameraOnline = false;
 
     let faceStatusCache = 0;
+    let faceStateCache = 0;
     let faceIdCache = 0;
     let faceSimilarityCache = 0;
     let faceBlinkCache = 0;
@@ -83,6 +87,10 @@ namespace AIcamera {
     let soundTouchDurationSecCache = 0;
     let soundTouchMessageCache = "";
 
+    let ballCountCache = 0;
+    let ballRecordCountCache = 0;
+    let ballTargetsCache = pins.createBuffer(0);
+
     let wifiStateCache = 0;
     let wifiFlagsCache = 0;
     let wifiMessageCache = "";
@@ -109,6 +117,8 @@ namespace AIcamera {
         Settings = 0x16,
         //% block="sound touch"
         SoundTouch = 0x1B,
+        //% block="ball recognition"
+        BallRecognition = 0x1E,
     }
 
     export enum RgbColor {
@@ -158,19 +168,61 @@ namespace AIcamera {
         Failed = 5,
     }
 
-    export enum FaceCoordinate {
-        //% block="center x"
-        CenterX = 0,
-        //% block="center y"
-        CenterY = 1,
-        //% block="left top x"
-        LeftTopX = 2,
-        //% block="left top y"
-        LeftTopY = 3,
-        //% block="right bottom x"
-        RightBottomX = 4,
-        //% block="right bottom y"
-        RightBottomY = 5,
+    export enum FaceValue {
+        //% block="x coordinate"
+        X = 0,
+        //% block="y coordinate"
+        Y = 1,
+        //% block="id"
+        Id = 2,
+        //% block="confidence"
+        Confidence = 3,
+        //% block="blink count"
+        BlinkCount = 4,
+        //% block="mouth open count"
+        MouthOpenCount = 5,
+    }
+
+    export enum SelfLearnValue {
+        //% block="id"
+        Id = 0,
+        //% block="confidence"
+        Confidence = 1,
+    }
+
+    export enum HandValue {
+        //% block="id"
+        Id = 0,
+        //% block="confidence"
+        Confidence = 1,
+        //% block="pose confidence"
+        PoseConfidence = 2,
+    }
+
+    export enum SoundTouchValue {
+        //% block="status"
+        Status = 0,
+        //% block="bpm"
+        Bpm = 1,
+        //% block="beat count"
+        BeatCount = 2,
+        //% block="duration seconds"
+        DurationSec = 3,
+    }
+
+    export enum BallValue {
+        //% block="x coordinate"
+        X = 0,
+        //% block="y coordinate"
+        Y = 1,
+        //% block="id"
+        Id = 2,
+        //% block="confidence"
+        Confidence = 3,
+        //% block="width"
+        Width = 4,
+        //% block="height"
+        Height = 5,
     }
 
     let currentMode: AppMode = AppMode.Launcher;
@@ -702,6 +754,9 @@ namespace AIcamera {
         if (mode == AppMode.SoundTouch) {
             return "sound touch";
         }
+        if (mode == AppMode.BallRecognition) {
+            return "ball";
+        }
         return "unknown";
     }
 
@@ -741,6 +796,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.SoundTouch as number)) {
             currentMode = AppMode.SoundTouch;
+            return true;
+        }
+        if (id == (AppMode.BallRecognition as number)) {
+            currentMode = AppMode.BallRecognition;
             return true;
         }
         return false;
@@ -884,8 +943,11 @@ namespace AIcamera {
             return false;
         }
 
-        faceStatusCache = raw[0] & 0xFF;
+        faceStateCache = raw[0] & 0xFF;
         faceIdCache = raw[1] & 0xFF;
+        if (faceIdCache == 0xFF) {
+            faceIdCache = 0;
+        }
         faceSimilarityCache = minNumber((raw[2] & 0xFF) / 100.0, 1.0);
         faceBlinkCache = raw[3] & 0xFF;
         faceMouthOpenCache = raw[4] & 0xFF;
@@ -914,6 +976,12 @@ namespace AIcamera {
             faceLabelCache = utf8DecodePart(raw, 15, labelLen);
         } else {
             faceLabelCache = "";
+        }
+        const faceCountOffset = 15 + labelLen;
+        if (raw.length > faceCountOffset) {
+            faceStatusCache = raw[faceCountOffset] & 0xFF;
+        } else {
+            faceStatusCache = faceCoordValidCache != 0 ? 1 : 0;
         }
         return true;
     }
@@ -981,6 +1049,35 @@ namespace AIcamera {
         return true;
     }
 
+    function parseBallPacket(raw: Buffer): boolean {
+        if (!raw || raw.length < BALL_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        ballCountCache = raw[0] & 0xFF;
+        let recordCount = raw[1] & 0xFF;
+        recordCount = minNumber(recordCount, ballCountCache);
+        recordCount = minNumber(recordCount, BALL_MAX_TARGETS);
+        const availableRecords = ((raw.length - BALL_RESULT_HEAD_LEN) / BALL_TARGET_STRIDE) | 0;
+        recordCount = minNumber(recordCount, availableRecords);
+        ballRecordCountCache = recordCount;
+
+        const targets = pins.createBuffer(recordCount * BALL_TARGET_STRIDE);
+        for (let i = 0; i < targets.length; i++) {
+            targets[i] = raw[BALL_RESULT_HEAD_LEN + i] & 0xFF;
+        }
+        ballTargetsCache = targets;
+        return true;
+    }
+
+    function ballTargetOffset(objectIndex: number): number {
+        let index = objectIndex | 0;
+        if (index < 1 || index > ballRecordCountCache) {
+            return -1;
+        }
+        return (index - 1) * BALL_TARGET_STRIDE;
+    }
+
     function refreshFaceResultInternal(): boolean {
         const head = regReadRetry(REG_RESULT_BASE, 15, 2);
         if (!head || head.length < 15) {
@@ -988,8 +1085,11 @@ namespace AIcamera {
         }
 
         const labelLen = head[14] & 0xFF;
-        const totalLen = 15 + labelLen;
-        const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
+        const totalLen = 16 + labelLen;
+        let raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
+        if (!raw || raw.length < totalLen) {
+            raw = regReadBytes(REG_RESULT_BASE, 15 + labelLen, ioChunk, 3);
+        }
         return parseFacePacket(raw);
     }
 
@@ -1020,6 +1120,20 @@ namespace AIcamera {
     function refreshSoundTouchResultInternal(): boolean {
         const raw = regReadRetry(REG_RESULT_BASE, 7, 2);
         return parseSoundTouchPacket(raw);
+    }
+
+    function refreshBallResultInternal(): boolean {
+        const head = regReadRetry(REG_RESULT_BASE, BALL_RESULT_HEAD_LEN, 2);
+        if (!head || head.length < BALL_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        let recordCount = head[1] & 0xFF;
+        recordCount = minNumber(recordCount, head[0] & 0xFF);
+        recordCount = minNumber(recordCount, BALL_MAX_TARGETS);
+        const totalLen = BALL_RESULT_HEAD_LEN + recordCount * BALL_TARGET_STRIDE;
+        const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
+        return parseBallPacket(raw);
     }
 
     //% block="IIC 初始化AI摄像头"
@@ -1107,12 +1221,22 @@ namespace AIcamera {
     //% password.defl="password"
     //% weight=87
     //% group="WiFi"
-    export function connectWifi(ssid: string, password: string): boolean {
-        return connectWifiInternal(ssid, password, 60000);
+    export function connectWifi(ssid: string, password: string): void {
+        connectWifiInternal(ssid, password, 60000);
+    }
+
+    //% block="wifi connected %connected"
+    //% connected.defl=false
+    //% weight=86
+    //% group="WiFi"
+    export function wifiConnected(connected: boolean): boolean {
+        refreshWifiStatusInternal(450);
+        return wifiPublicReadyCached() == connected;
     }
 
     //% block="refresh wifi status"
-    //% weight=86
+    //% blockHidden=1
+    //% weight=85
     //% group="WiFi"
     export function refreshWifiStatus(): void {
         if (!isCameraReady()) {
@@ -1122,21 +1246,24 @@ namespace AIcamera {
     }
 
     //% block="wifi state"
-    //% weight=85
+    //% blockHidden=1
+    //% weight=84
     //% group="WiFi"
     export function wifiState(): WifiState {
         return wifiStateCache as WifiState;
     }
 
     //% block="wifi public ready"
-    //% weight=84
+    //% blockHidden=1
+    //% weight=83
     //% group="WiFi"
     export function wifiPublicReady(): boolean {
         return wifiPublicReadyCached();
     }
 
     //% block="wifi message"
-    //% weight=83
+    //% blockHidden=1
+    //% weight=82
     //% group="WiFi"
     export function wifiMessage(): string {
         return wifiMessageCache;
@@ -1144,7 +1271,7 @@ namespace AIcamera {
 
     //% block="refresh recognize result"
     //% weight=80
-    //% group="Result"
+    //% group="App"
     export function refreshResult(): void {
         if (!isCameraReady()) {
             return;
@@ -1166,6 +1293,10 @@ namespace AIcamera {
             refreshSoundTouchResultInternal();
             return;
         }
+        if (modeId == (AppMode.BallRecognition as number)) {
+            refreshBallResultInternal();
+            return;
+        }
     }
 
     //% block="refresh face result"
@@ -1179,7 +1310,7 @@ namespace AIcamera {
         refreshFaceResultInternal();
     }
 
-    //% block="face status"
+    //% block="face recognition total count"
     //% weight=78
     //% group="Face"
     export function faceStatus(): number {
@@ -1187,20 +1318,22 @@ namespace AIcamera {
     }
 
     //% block="face id"
+    //% blockHidden=1
     //% weight=77
     //% group="Face"
     export function faceId(): number {
         return faceIdCache;
     }
 
-    //% block="face label"
-    //% weight=76
+    //% block="face recognition name"
+    //% weight=68
     //% group="Face"
     export function faceLabel(): string {
         return faceLabelCache;
     }
 
     //% block="face similarity"
+    //% blockHidden=1
     //% weight=75
     //% group="Face"
     export function faceSimilarity(): number {
@@ -1208,6 +1341,7 @@ namespace AIcamera {
     }
 
     //% block="face blink"
+    //% blockHidden=1
     //% weight=74
     //% group="Face"
     export function faceBlink(): number {
@@ -1215,24 +1349,48 @@ namespace AIcamera {
     }
 
     //% block="face mouth open"
+    //% blockHidden=1
     //% weight=73
     //% group="Face"
     export function faceMouthOpen(): number {
         return faceMouthOpenCache;
     }
 
-    //% block="detected face"
+    //% block="detected face recognition face"
     //% weight=72
     //% group="Face"
     export function detectedUnrecognizedFace(): boolean {
         return faceCoordValidCache != 0;
     }
 
-    //% block="detected recognized face"
+    //% block="detected face recognition learned face"
     //% weight=71
     //% group="Face"
     export function detectedRecognizedFace(): boolean {
-        return faceStatusCache == 1;
+        return faceStateCache == 1 && faceIdCache > 0;
+    }
+
+    //% block="get face recognition %data value"
+    //% data.defl=FaceValue.X
+    //% weight=70
+    //% group="Face"
+    export function faceValue(data: FaceValue = FaceValue.X): number {
+        if (data == FaceValue.X) {
+            return faceCenterX();
+        }
+        if (data == FaceValue.Y) {
+            return faceCenterY();
+        }
+        if (data == FaceValue.Id) {
+            return faceIdCache;
+        }
+        if (data == FaceValue.Confidence) {
+            return faceSimilarityCache;
+        }
+        if (data == FaceValue.BlinkCount) {
+            return faceBlinkCache;
+        }
+        return faceMouthOpenCache;
     }
 
     function hasValidFaceCenterData(): boolean {
@@ -1242,52 +1400,38 @@ namespace AIcamera {
         return !(faceLeftTopXCache == faceRightBottomXCache && faceLeftTopYCache == faceRightBottomYCache);
     }
 
-    //% block="face coordinate %coord"
-    //% weight=70
-    //% group="Face"
-    export function faceCoordinate(coord: FaceCoordinate): number {
-        if (coord == FaceCoordinate.CenterX) {
-            if (!hasValidFaceCenterData()) {
-                return 160;
-            }
-            let x = (faceLeftTopXCache + faceRightBottomXCache) >> 1;
-            if (x < 0) {
-                x = 0;
-            }
-            if (x > 320) {
-                x = 320;
-            }
-            if (x == 0 || x == 320) {
-                return 160;
-            }
-            return x;
+    function faceCenterX(): number {
+        if (!hasValidFaceCenterData()) {
+            return 160;
         }
-        if (coord == FaceCoordinate.CenterY) {
-            if (!hasValidFaceCenterData()) {
-                return 120;
-            }
-            let y = 240 - ((faceLeftTopYCache + faceRightBottomYCache) >> 1);
-            if (y < 0) {
-                y = 0;
-            }
-            if (y > 240) {
-                y = 240;
-            }
-            if (y == 0 || y == 240) {
-                return 120;
-            }
-            return y;
+        let x = (faceLeftTopXCache + faceRightBottomXCache) >> 1;
+        if (x < 0) {
+            x = 0;
         }
-        if (coord == FaceCoordinate.LeftTopX) {
-            return faceLeftTopXCache;
+        if (x > 320) {
+            x = 320;
         }
-        if (coord == FaceCoordinate.LeftTopY) {
-            return faceLeftTopYCache;
+        if (x == 0 || x == 320) {
+            return 160;
         }
-        if (coord == FaceCoordinate.RightBottomX) {
-            return faceRightBottomXCache;
+        return x;
+    }
+
+    function faceCenterY(): number {
+        if (!hasValidFaceCenterData()) {
+            return 120;
         }
-        return faceRightBottomYCache;
+        let y = 240 - ((faceLeftTopYCache + faceRightBottomYCache) >> 1);
+        if (y < 0) {
+            y = 0;
+        }
+        if (y > 240) {
+            y = 240;
+        }
+        if (y == 0 || y == 240) {
+            return 120;
+        }
+        return y;
     }
 
     //% block="refresh self learn result"
@@ -1302,6 +1446,7 @@ namespace AIcamera {
     }
 
     //% block="self learn status"
+    //% blockHidden=1
     //% weight=69
     //% group="Self Learn"
     export function selfLearnStatus(): number {
@@ -1309,27 +1454,40 @@ namespace AIcamera {
     }
 
     //% block="self learn id"
+    //% blockHidden=1
     //% weight=68
     //% group="Self Learn"
     export function selfLearnId(): number {
         return selfLearnIdCache;
     }
 
-    //% block="self learn label"
-    //% weight=67
+    //% block="self learn classification name"
+    //% weight=64
     //% group="Self Learn"
     export function selfLearnLabel(): string {
         return selfLearnLabelCache;
     }
 
     //% block="self learn similarity"
+    //% blockHidden=1
     //% weight=66
     //% group="Self Learn"
     export function selfLearnSimilarity(): number {
         return selfLearnSimilarityCache;
     }
 
-    //% block="detected learned object"
+    //% block="get self learn classification %data value"
+    //% data.defl=SelfLearnValue.Id
+    //% weight=66
+    //% group="Self Learn"
+    export function selfLearnValue(data: SelfLearnValue = SelfLearnValue.Id): number {
+        if (data == SelfLearnValue.Id) {
+            return selfLearnIdCache;
+        }
+        return selfLearnSimilarityCache;
+    }
+
+    //% block="detected self learn classification object"
     //% weight=65
     //% group="Self Learn"
     export function detectedLearnedObject(): boolean {
@@ -1348,6 +1506,7 @@ namespace AIcamera {
     }
 
     //% block="hand status"
+    //% blockHidden=1
     //% weight=59
     //% group="Hand"
     export function handStatus(): number {
@@ -1355,20 +1514,22 @@ namespace AIcamera {
     }
 
     //% block="hand id"
+    //% blockHidden=1
     //% weight=58
     //% group="Hand"
     export function handId(): number {
         return handIdCache;
     }
 
-    //% block="hand label"
-    //% weight=57
+    //% block="gesture recognition name"
+    //% weight=53
     //% group="Hand"
     export function handLabel(): string {
         return handLabelCache;
     }
 
     //% block="hand similarity"
+    //% blockHidden=1
     //% weight=56
     //% group="Hand"
     export function handSimilarity(): number {
@@ -1376,13 +1537,28 @@ namespace AIcamera {
     }
 
     //% block="hand pose similarity"
+    //% blockHidden=1
     //% weight=55
     //% group="Hand"
     export function handPoseSimilarity(): number {
         return handPoseSimilarityCache;
     }
 
-    //% block="detected learned gesture"
+    //% block="get gesture recognition %data value"
+    //% data.defl=HandValue.Id
+    //% weight=55
+    //% group="Hand"
+    export function handValue(data: HandValue = HandValue.Id): number {
+        if (data == HandValue.Id) {
+            return handIdCache;
+        }
+        if (data == HandValue.Confidence) {
+            return handSimilarityCache;
+        }
+        return handPoseSimilarityCache;
+    }
+
+    //% block="detected gesture recognition learned gesture"
     //% weight=54
     //% group="Hand"
     export function detectedLearnedGesture(): boolean {
@@ -1472,6 +1648,7 @@ namespace AIcamera {
     }
 
     //% block="sound touch status"
+    //% blockHidden=1
     //% weight=45
     //% group="Sound Touch"
     export function soundTouchStatus(): number {
@@ -1479,6 +1656,7 @@ namespace AIcamera {
     }
 
     //% block="sound touch bpm"
+    //% blockHidden=1
     //% weight=44
     //% group="Sound Touch"
     export function soundTouchBpm(): number {
@@ -1486,6 +1664,7 @@ namespace AIcamera {
     }
 
     //% block="sound touch beat count"
+    //% blockHidden=1
     //% weight=43
     //% group="Sound Touch"
     export function soundTouchBeatCount(): number {
@@ -1493,9 +1672,27 @@ namespace AIcamera {
     }
 
     //% block="sound touch duration(s)"
+    //% blockHidden=1
     //% weight=42
     //% group="Sound Touch"
     export function soundTouchDurationSec(): number {
+        return soundTouchDurationSecCache;
+    }
+
+    //% block="get sound touch %data value"
+    //% data.defl=SoundTouchValue.Bpm
+    //% weight=42
+    //% group="Sound Touch"
+    export function soundTouchValue(data: SoundTouchValue = SoundTouchValue.Bpm): number {
+        if (data == SoundTouchValue.Status) {
+            return soundTouchStatusCache;
+        }
+        if (data == SoundTouchValue.Bpm) {
+            return soundTouchBpmCache;
+        }
+        if (data == SoundTouchValue.BeatCount) {
+            return soundTouchBeatCountCache;
+        }
         return soundTouchDurationSecCache;
     }
 
@@ -1504,6 +1701,59 @@ namespace AIcamera {
     //% group="Sound Touch"
     export function soundTouchMessage(): string {
         return soundTouchMessageCache;
+    }
+
+    //% block="refresh ball recognition result"
+    //% blockHidden=1
+    //% weight=40
+    //% group="Ball"
+    export function refreshBallResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshBallResultInternal();
+    }
+
+    //% block="detected ball recognition object"
+    //% weight=39
+    //% group="Ball"
+    export function detectedBall(): boolean {
+        return ballCountCache > 0;
+    }
+
+    //% block="ball recognition total count"
+    //% weight=38
+    //% group="Ball"
+    export function ballCount(): number {
+        return ballCountCache;
+    }
+
+    //% block="get ball recognition object %objectIndex %data value"
+    //% objectIndex.min=1 objectIndex.max=16 objectIndex.defl=1
+    //% data.defl=BallValue.X
+    //% weight=37
+    //% group="Ball"
+    export function ballValue(objectIndex: number = 1, data: BallValue = BallValue.X): number {
+        const offset = ballTargetOffset(objectIndex);
+        if (offset < 0) {
+            return 0;
+        }
+        if (data == BallValue.X) {
+            return u16le(ballTargetsCache, offset + 2);
+        }
+        if (data == BallValue.Y) {
+            return u16le(ballTargetsCache, offset + 4);
+        }
+        if (data == BallValue.Id) {
+            return ballTargetsCache[offset] & 0xFF;
+        }
+        if (data == BallValue.Confidence) {
+            return minNumber((ballTargetsCache[offset + 1] & 0xFF) / 100.0, 1.0);
+        }
+        if (data == BallValue.Width) {
+            return u16le(ballTargetsCache, offset + 6);
+        }
+        return u16le(ballTargetsCache, offset + 8);
     }
 
     //% block="mode name %mode"
