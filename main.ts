@@ -14,12 +14,35 @@ namespace AIcamera {
     const UART_CMD_SOUND_TOUCH_PATH = 0x37;
     const UART_CMD_SOUND_TOUCH_CTRL = 0x38;
     const UART_CMD_SOUND_TOUCH_UPLOAD = 0x3A;
+    const UART_CMD_WIFI_CONNECT = 0x41;
+    const UART_CMD_WIFI_STATUS_QUERY = 0x42;
+    const UART_CMD_WIFI_MAILBOX_ACK = 0x43;
 
     const REG_APP_ID = 0;
     const REG_RESULT_BASE = 100;
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
+    const SOUND_CTRL_CMD_START_AUTO_UPLOAD = 0x03;
+
+    const WIFI_STATUS_ADDR = 0x0010;
+    const WIFI_STATUS_TEXT_ADDR = WIFI_STATUS_ADDR + 8;
+    const WIFI_MAILBOX_MAGIC = 0xA5;
+    const WIFI_MAILBOX_VERSION = 0x01;
+    const WIFI_MAILBOX_IDLE = 0x00;
+    const WIFI_MAILBOX_STATUS_READY = 0x11;
+    const WIFI_MAILBOX_CONNECT_RECEIVED = 0x12;
+    const WIFI_MAILBOX_ERROR = 0x13;
+    const WIFI_MAILBOX_HEADER_LEN = 8;
+    const WIFI_STATUS_TOTAL_BYTES = 80;
+    const WIFI_STATUS_MAX_TEXT_BYTES = WIFI_STATUS_TOTAL_BYTES - WIFI_MAILBOX_HEADER_LEN;
+    const WIFI_CONNECT_SEND_MAX_RETRY = 5;
+    const WIFI_FLAG_WIFI_LINK = 0x01;
+    const WIFI_FLAG_IP_READY = 0x02;
+    const WIFI_FLAG_PUBLIC_READY = 0x04;
+    const WIFI_FLAG_BUSY = 0x08;
+    const WIFI_VALID_FLAGS_MASK = WIFI_FLAG_WIFI_LINK | WIFI_FLAG_IP_READY | WIFI_FLAG_PUBLIC_READY | WIFI_FLAG_BUSY;
+
     const INIT_IIC_MAX_RETRY = 3;
     const INIT_IIC_ATTEMPT_TIMEOUT_MS = 300;
     const INIT_IIC_POLL_INTERVAL_MS = 20;
@@ -59,6 +82,13 @@ namespace AIcamera {
     let soundTouchBeatCountCache = 0;
     let soundTouchDurationSecCache = 0;
     let soundTouchMessageCache = "";
+
+    let wifiStateCache = 0;
+    let wifiFlagsCache = 0;
+    let wifiMessageCache = "";
+    let wifiMailboxSeq = 0;
+    let wifiMailboxTypeCache = WIFI_MAILBOX_IDLE;
+    let wifiMailboxSeqCache = 0;
 
     export enum AppMode {
         //% block="main menu"
@@ -111,6 +141,21 @@ namespace AIcamera {
         Processing = 3,
         //% block="state 4"
         State4 = 4,
+    }
+
+    export enum WifiState {
+        //% block="unknown"
+        Unknown = 0,
+        //% block="connecting"
+        Connecting = 1,
+        //% block="waiting local"
+        WaitingLocal = 2,
+        //% block="waiting public"
+        WaitingPublic = 3,
+        //% block="public ready"
+        PublicReady = 4,
+        //% block="failed"
+        Failed = 5,
     }
 
     export enum FaceCoordinate {
@@ -398,6 +443,235 @@ namespace AIcamera {
         }
 
         return true;
+    }
+
+    function nextWifiMailboxSeq(): number {
+        wifiMailboxSeq = (wifiMailboxSeq + 1) & 0xFF;
+        if (wifiMailboxSeq == 0) {
+            wifiMailboxSeq = 1;
+        }
+        return wifiMailboxSeq;
+    }
+
+    function isValidWifiState(state: number): boolean {
+        const s = state & 0xFF;
+        return s == (WifiState.Unknown as number) ||
+            s == (WifiState.Connecting as number) ||
+            s == (WifiState.WaitingLocal as number) ||
+            s == (WifiState.WaitingPublic as number) ||
+            s == (WifiState.PublicReady as number) ||
+            s == (WifiState.Failed as number);
+    }
+
+    function isValidWifiMailbox(mailboxType: number, state: number, flags: number, textLen: number): boolean {
+        const mt = mailboxType & 0xFF;
+        const st = state & 0xFF;
+        const fl = flags & 0xFF;
+
+        if (mt != WIFI_MAILBOX_IDLE &&
+            mt != WIFI_MAILBOX_STATUS_READY &&
+            mt != WIFI_MAILBOX_CONNECT_RECEIVED &&
+            mt != WIFI_MAILBOX_ERROR) {
+            return false;
+        }
+        if (!isValidWifiState(st)) {
+            return false;
+        }
+        if ((fl & (~WIFI_VALID_FLAGS_MASK & 0xFF)) != 0) {
+            return false;
+        }
+        if (textLen < 0 || textLen > WIFI_STATUS_MAX_TEXT_BYTES) {
+            return false;
+        }
+        if (st == (WifiState.WaitingLocal as number) && (fl & WIFI_FLAG_PUBLIC_READY) != 0) {
+            return false;
+        }
+        if (st == (WifiState.WaitingPublic as number) && (fl & WIFI_FLAG_IP_READY) == 0) {
+            return false;
+        }
+        if (st == (WifiState.PublicReady as number)) {
+            const required = WIFI_FLAG_WIFI_LINK | WIFI_FLAG_IP_READY | WIFI_FLAG_PUBLIC_READY;
+            if ((fl & required) != required) {
+                return false;
+            }
+        }
+        if (st == (WifiState.Failed as number) && (fl & WIFI_FLAG_PUBLIC_READY) != 0) {
+            return false;
+        }
+        return true;
+    }
+
+    function applyWifiStatus(state: number, flags: number, message: string): void {
+        wifiStateCache = state & 0xFF;
+        wifiFlagsCache = flags & 0xFF;
+        wifiMessageCache = "" + message;
+    }
+
+    function sendWifiMailboxAck(mailboxType: number, seq: number): boolean {
+        return sendUartCommandArray(UART_CMD_WIFI_MAILBOX_ACK, [
+            mailboxType & 0xFF,
+            seq & 0xFF
+        ]);
+    }
+
+    function readWifiMailbox(expectedType: number, expectedSeq: number, timeoutMs: number): boolean {
+        if (!isCameraReady()) {
+            return false;
+        }
+
+        const deadline = input.runningTime() + maxNumber(50, timeoutMs | 0);
+        while (input.runningTime() < deadline) {
+            const head = regReadRetry(WIFI_STATUS_ADDR, WIFI_MAILBOX_HEADER_LEN, 2);
+            if (!head || head.length < WIFI_MAILBOX_HEADER_LEN) {
+                basic.pause(20);
+                continue;
+            }
+
+            const magic = head[0] & 0xFF;
+            const version = head[1] & 0xFF;
+            const mailboxType = head[2] & 0xFF;
+            const mailboxSeq = head[3] & 0xFF;
+            const state = head[4] & 0xFF;
+            const flags = head[5] & 0xFF;
+            const textLen = ((head[6] & 0xFF) << 8) | (head[7] & 0xFF);
+
+            if (magic != WIFI_MAILBOX_MAGIC || version != WIFI_MAILBOX_VERSION) {
+                basic.pause(20);
+                continue;
+            }
+            if (mailboxType == WIFI_MAILBOX_IDLE) {
+                basic.pause(20);
+                continue;
+            }
+            if (expectedType >= 0 && mailboxType != (expectedType & 0xFF)) {
+                basic.pause(20);
+                continue;
+            }
+            if (expectedSeq >= 0 && mailboxSeq != (expectedSeq & 0xFF)) {
+                basic.pause(20);
+                continue;
+            }
+            if (!isValidWifiMailbox(mailboxType, state, flags, textLen)) {
+                basic.pause(20);
+                continue;
+            }
+
+            let message = "";
+            if (textLen > 0) {
+                const textBytes = regReadBytes(WIFI_STATUS_TEXT_ADDR, textLen, ioChunk, 2);
+                if (!textBytes || textBytes.length < textLen) {
+                    basic.pause(20);
+                    continue;
+                }
+                message = utf8DecodePart(textBytes, 0, textLen);
+            }
+
+            wifiMailboxTypeCache = mailboxType;
+            wifiMailboxSeqCache = mailboxSeq;
+            applyWifiStatus(state, flags, message);
+            sendWifiMailboxAck(mailboxType, mailboxSeq);
+            return true;
+        }
+
+        return false;
+    }
+
+    function refreshWifiStatusInternal(waitMs: number = 450): boolean {
+        if (!isCameraReady()) {
+            return false;
+        }
+
+        const seq = nextWifiMailboxSeq();
+        if (!sendUartCommandArray(UART_CMD_WIFI_STATUS_QUERY, [seq])) {
+            return false;
+        }
+        return readWifiMailbox(WIFI_MAILBOX_STATUS_READY, seq, waitMs);
+    }
+
+    function wifiPublicReadyCached(): boolean {
+        return wifiStateCache == (WifiState.PublicReady as number) &&
+            (wifiFlagsCache & WIFI_FLAG_PUBLIC_READY) != 0;
+    }
+
+    function sendWifiConnectRequest(seq: number, ssid: string, password: string): boolean {
+        const ssidBytes = utf8Encode(ssid);
+        const passwordBytes = utf8Encode(password);
+        const ssidLen = ssidBytes.length;
+        const passwordLen = passwordBytes.length;
+
+        if (ssidLen <= 0 || ssidLen > 127 || passwordLen > 119 || ssidLen + passwordLen > 246) {
+            return false;
+        }
+
+        const payload = pins.createBuffer(3 + ssidLen + passwordLen);
+        payload[0] = seq & 0xFF;
+        payload[1] = ssidLen & 0xFF;
+        payload[2] = passwordLen & 0xFF;
+        for (let i = 0; i < ssidLen; i++) {
+            payload[3 + i] = ssidBytes[i];
+        }
+        for (let i = 0; i < passwordLen; i++) {
+            payload[3 + ssidLen + i] = passwordBytes[i];
+        }
+
+        const frame = buildUartFrame(UART_CMD_WIFI_CONNECT, payload);
+        return writeUartFrame(frame);
+    }
+
+    function waitWifiConnectReceipt(seq: number): boolean {
+        const deadline = input.runningTime() + 3500;
+        while (input.runningTime() < deadline) {
+            if (!readWifiMailbox(-1, seq, 650)) {
+                basic.pause(80);
+                continue;
+            }
+            if (wifiMailboxTypeCache == WIFI_MAILBOX_CONNECT_RECEIVED) {
+                return true;
+            }
+            if (wifiMailboxTypeCache == WIFI_MAILBOX_ERROR) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    function connectWifiInternal(ssid: string, password: string, timeoutMs: number): boolean {
+        if (!isCameraReady()) {
+            return false;
+        }
+
+        const ssidText = ("" + ssid).trim();
+        const passwordText = "" + password;
+        if (!ssidText) {
+            applyWifiStatus(WifiState.Failed as number, 0, "SSID empty");
+            return false;
+        }
+
+        const seq = nextWifiMailboxSeq();
+        let accepted = false;
+        for (let i = 0; i < WIFI_CONNECT_SEND_MAX_RETRY; i++) {
+            if (sendWifiConnectRequest(seq, ssidText, passwordText) && waitWifiConnectReceipt(seq)) {
+                accepted = true;
+                break;
+            }
+            basic.pause(120);
+        }
+        if (!accepted) {
+            return false;
+        }
+
+        const deadline = input.runningTime() + maxNumber(1000, timeoutMs | 0);
+        while (input.runningTime() < deadline) {
+            refreshWifiStatusInternal(600);
+            if (wifiPublicReadyCached()) {
+                return true;
+            }
+            if (wifiStateCache == (WifiState.Failed as number)) {
+                return false;
+            }
+            basic.pause(400);
+        }
+        return false;
     }
 
     function modeName(mode: AppMode): string {
@@ -828,6 +1102,46 @@ namespace AIcamera {
         sendUartCommandArray(UART_CMD_RGB_CONTROL, [color as number]);
     }
 
+    //% block="connect camera wifi ssid %ssid password %password"
+    //% ssid.defl="wifi name"
+    //% password.defl="password"
+    //% weight=87
+    //% group="WiFi"
+    export function connectWifi(ssid: string, password: string): boolean {
+        return connectWifiInternal(ssid, password, 60000);
+    }
+
+    //% block="refresh wifi status"
+    //% weight=86
+    //% group="WiFi"
+    export function refreshWifiStatus(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshWifiStatusInternal(450);
+    }
+
+    //% block="wifi state"
+    //% weight=85
+    //% group="WiFi"
+    export function wifiState(): WifiState {
+        return wifiStateCache as WifiState;
+    }
+
+    //% block="wifi public ready"
+    //% weight=84
+    //% group="WiFi"
+    export function wifiPublicReady(): boolean {
+        return wifiPublicReadyCached();
+    }
+
+    //% block="wifi message"
+    //% weight=83
+    //% group="WiFi"
+    export function wifiMessage(): string {
+        return wifiMessageCache;
+    }
+
     //% block="refresh recognize result"
     //% weight=80
     //% group="Result"
@@ -1114,15 +1428,30 @@ namespace AIcamera {
     //% weight=49
     //% group="Sound Touch"
     export function soundTouchRecord(enable: boolean): void {
+        soundTouchRecordWithUpload(enable, false);
+    }
+
+    //% block="sound touch record %enable auto upload %upload"
+    //% enable.defl=true
+    //% upload.defl=true
+    //% weight=48
+    //% group="Sound Touch"
+    export function soundTouchRecordWithUpload(enable: boolean, upload: boolean): void {
         if (!isCameraReady()) {
             return;
         }
-        const cmd = enable ? SOUND_CTRL_CMD_START : SOUND_CTRL_CMD_STOP;
-        sendUartCommandArray(UART_CMD_SOUND_TOUCH_CTRL, [cmd]);
+        const cmd = enable
+            ? (upload ? SOUND_CTRL_CMD_START_AUTO_UPLOAD : SOUND_CTRL_CMD_START)
+            : SOUND_CTRL_CMD_STOP;
+        const ok = sendUartCommandArray(UART_CMD_SOUND_TOUCH_CTRL, [cmd]);
+        if (ok && !enable && upload) {
+            basic.pause(200);
+            sendUartCommandArray(UART_CMD_SOUND_TOUCH_UPLOAD, [0x01]);
+        }
     }
 
     //% block="sound touch upload"
-    //% weight=48
+    //% weight=47
     //% group="Sound Touch"
     export function soundTouchUpload(): void {
         if (!isCameraReady()) {
@@ -1133,7 +1462,7 @@ namespace AIcamera {
 
     //% block="refresh sound touch result"
     //% blockHidden=1
-    //% weight=47
+    //% weight=46
     //% group="Sound Touch"
     export function refreshSoundTouchResult(): void {
         if (!isCameraReady()) {
@@ -1143,35 +1472,35 @@ namespace AIcamera {
     }
 
     //% block="sound touch status"
-    //% weight=46
+    //% weight=45
     //% group="Sound Touch"
     export function soundTouchStatus(): number {
         return soundTouchStatusCache;
     }
 
     //% block="sound touch bpm"
-    //% weight=45
+    //% weight=44
     //% group="Sound Touch"
     export function soundTouchBpm(): number {
         return soundTouchBpmCache;
     }
 
     //% block="sound touch beat count"
-    //% weight=44
+    //% weight=43
     //% group="Sound Touch"
     export function soundTouchBeatCount(): number {
         return soundTouchBeatCountCache;
     }
 
     //% block="sound touch duration(s)"
-    //% weight=43
+    //% weight=42
     //% group="Sound Touch"
     export function soundTouchDurationSec(): number {
         return soundTouchDurationSecCache;
     }
 
     //% block="sound touch message"
-    //% weight=42
+    //% weight=41
     //% group="Sound Touch"
     export function soundTouchMessage(): string {
         return soundTouchMessageCache;

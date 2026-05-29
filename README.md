@@ -33,6 +33,7 @@ This extension follows the `u_device` packet style on I2C device address `0x60`:
 - register write cmd: `0x20`
 - register read cmd: `0x21`
 - UART tunnel cmd: `0x30`
+- WiFi UART control: `0x41/0x42/0x43`, status mailbox at register `0x0010`
 
 UART tunnel payload uses reference `FF F9` frames internally.
 
