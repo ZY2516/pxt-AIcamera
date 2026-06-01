@@ -24,6 +24,7 @@ namespace AIcamera {
     const BALL_TARGET_STRIDE = 10;
     const BALL_MAX_TARGETS = 16;
     const LINE_RESULT_LEN = 20;
+    const OCR_RESULT_HEAD_LEN = 3;
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -94,6 +95,9 @@ namespace AIcamera {
     let lineDetectedCache = 0;
     let lineDirectionCache = 0;
     let lineResultCache = pins.createBuffer(LINE_RESULT_LEN);
+    let ocrStatusCache = 0;
+    let ocrConfidenceCache = 0;
+    let ocrTextCache = "";
 
     let wifiStateCache = 0;
     let wifiFlagsCache = 0;
@@ -123,6 +127,8 @@ namespace AIcamera {
         SoundTouch = 0x1B,
         //% block="ball recognition"
         BallRecognition = 0x1E,
+        //% block="ocr"
+        McOcr = 0x20,
         //% block="line recognition"
         LineRecognition = 0x21,
     }
@@ -245,6 +251,13 @@ namespace AIcamera {
         Angle = 1,
         //% block="length"
         Length = 2,
+    }
+
+    export enum OcrValue {
+        //% block="length"
+        Length = 0,
+        //% block="confidence"
+        Confidence = 1,
     }
 
     let currentMode: AppMode = AppMode.Launcher;
@@ -787,6 +800,9 @@ namespace AIcamera {
         if (mode == AppMode.BallRecognition) {
             return "ball";
         }
+        if (mode == AppMode.McOcr) {
+            return "ocr";
+        }
         if (mode == AppMode.LineRecognition) {
             return "line";
         }
@@ -833,6 +849,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.BallRecognition as number)) {
             currentMode = AppMode.BallRecognition;
+            return true;
+        }
+        if (id == (AppMode.McOcr as number)) {
+            currentMode = AppMode.McOcr;
             return true;
         }
         if (id == (AppMode.LineRecognition as number)) {
@@ -1127,6 +1147,22 @@ namespace AIcamera {
         return true;
     }
 
+    function parseOcrPacket(raw: Buffer): boolean {
+        if (!raw || raw.length < OCR_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        ocrStatusCache = raw[0] & 0xFF;
+        ocrConfidenceCache = minNumber((raw[1] & 0xFF) / 100.0, 1.0);
+
+        let textLen = raw[2] & 0xFF;
+        if (textLen > raw.length - OCR_RESULT_HEAD_LEN) {
+            textLen = raw.length - OCR_RESULT_HEAD_LEN;
+        }
+        ocrTextCache = textLen > 0 ? utf8DecodePart(raw, OCR_RESULT_HEAD_LEN, textLen) : "";
+        return true;
+    }
+
     function ballTargetOffset(objectIndex: number): number {
         let index = objectIndex | 0;
         if (index < 1 || index > ballRecordCountCache) {
@@ -1196,6 +1232,18 @@ namespace AIcamera {
     function refreshLineResultInternal(): boolean {
         const raw = regReadRetry(REG_RESULT_BASE, LINE_RESULT_LEN, 2);
         return parseLinePacket(raw);
+    }
+
+    function refreshOcrResultInternal(): boolean {
+        const head = regReadRetry(REG_RESULT_BASE, OCR_RESULT_HEAD_LEN, 2);
+        if (!head || head.length < OCR_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        const textLen = head[2] & 0xFF;
+        const totalLen = OCR_RESULT_HEAD_LEN + textLen;
+        const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
+        return parseOcrPacket(raw);
     }
 
     //% block="IIC 初始化AI摄像头"
@@ -1357,6 +1405,10 @@ namespace AIcamera {
         }
         if (modeId == (AppMode.BallRecognition as number)) {
             refreshBallResultInternal();
+            return;
+        }
+        if (modeId == (AppMode.McOcr as number)) {
+            refreshOcrResultInternal();
             return;
         }
         if (modeId == (AppMode.LineRecognition as number)) {
@@ -1860,6 +1912,42 @@ namespace AIcamera {
             return i16le(lineResultCache, 16);
         }
         return u16le(lineResultCache, 18);
+    }
+
+    //% block="refresh OCR result"
+    //% blockHidden=1
+    //% weight=32
+    //% group="OCR"
+    export function refreshOcrResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshOcrResultInternal();
+    }
+
+    //% block="OCR detected characters"
+    //% weight=31
+    //% group="OCR"
+    export function detectedOcrCharacters(): boolean {
+        return ocrStatusCache == 1 && ocrTextCache.length > 0;
+    }
+
+    //% block="OCR recognized character data"
+    //% weight=30
+    //% group="OCR"
+    export function ocrText(): string {
+        return ocrTextCache;
+    }
+
+    //% block="get OCR recognition %data value"
+    //% data.defl=OcrValue.Length
+    //% weight=29
+    //% group="OCR"
+    export function ocrValue(data: OcrValue = OcrValue.Length): number {
+        if (data == OcrValue.Confidence) {
+            return ocrConfidenceCache;
+        }
+        return ocrTextCache.length;
     }
 
     //% block="mode name %mode"

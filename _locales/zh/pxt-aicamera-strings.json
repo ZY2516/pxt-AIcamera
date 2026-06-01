@@ -9,6 +9,7 @@
     "AIcamera.AppMode.Settings|block": "设置",
     "AIcamera.AppMode.SoundTouch|block": "节奏识别",
     "AIcamera.AppMode.BallRecognition|block": "小球识别",
+    "AIcamera.AppMode.McOcr|block": "光学字符识别",
     "AIcamera.AppMode.LineRecognition|block": "巡线识别",
     "AIcamera.RgbColor.Off|block": "关闭",
     "AIcamera.RgbColor.Red|block": "红色",
@@ -44,6 +45,8 @@
     "AIcamera.LineValue.Offset|block": "偏移",
     "AIcamera.LineValue.Angle|block": "角度",
     "AIcamera.LineValue.Length|block": "长度",
+    "AIcamera.OcrValue.Length|block": "长度",
+    "AIcamera.OcrValue.Confidence|block": "置信度",
     "AIcamera.iicInitCamera|block": "IIC 初始化AI摄像头",
     "AIcamera.switchTo|block": "切换功能为 %mode",
     "AIcamera.setRgb|block": "设置RGB灯 %color",
@@ -73,6 +76,9 @@
     "AIcamera.detectedLine|block": "巡线识别检测到线",
     "AIcamera.lineDirection|block": "识别到向 %direction 偏移的黑线",
     "AIcamera.lineValue|block": "获取巡线识别的 %data 值",
+    "AIcamera.detectedOcrCharacters|block": "OCR识别到字符",
+    "AIcamera.ocrText|block": "OCR识别字符数据",
+    "AIcamera.ocrValue|block": "获取OCR识别的 %data 值",
     "{id:category}AIcamera": "AIcamera",
     "{id:group}Config": "配置",
     "{id:group}App": "应用",
@@ -82,5 +88,6 @@
     "{id:group}WiFi": "WiFi",
     "{id:group}Sound Touch": "节奏识别",
     "{id:group}Ball": "小球识别",
-    "{id:group}Line": "巡线识别"
+    "{id:group}Line": "巡线识别",
+    "{id:group}OCR": "光学字符识别"
 }
