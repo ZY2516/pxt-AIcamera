@@ -23,6 +23,7 @@ namespace AIcamera {
     const BALL_RESULT_HEAD_LEN = 2;
     const BALL_TARGET_STRIDE = 10;
     const BALL_MAX_TARGETS = 16;
+    const LINE_RESULT_LEN = 20;
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -90,6 +91,9 @@ namespace AIcamera {
     let ballCountCache = 0;
     let ballRecordCountCache = 0;
     let ballTargetsCache = pins.createBuffer(0);
+    let lineDetectedCache = 0;
+    let lineDirectionCache = 0;
+    let lineResultCache = pins.createBuffer(LINE_RESULT_LEN);
 
     let wifiStateCache = 0;
     let wifiFlagsCache = 0;
@@ -119,6 +123,8 @@ namespace AIcamera {
         SoundTouch = 0x1B,
         //% block="ball recognition"
         BallRecognition = 0x1E,
+        //% block="line recognition"
+        LineRecognition = 0x21,
     }
 
     export enum RgbColor {
@@ -225,6 +231,22 @@ namespace AIcamera {
         Height = 5,
     }
 
+    export enum LineDirection {
+        //% block="left"
+        Left = 0,
+        //% block="right"
+        Right = 1,
+    }
+
+    export enum LineValue {
+        //% block="offset"
+        Offset = 0,
+        //% block="angle"
+        Angle = 1,
+        //% block="length"
+        Length = 2,
+    }
+
     let currentMode: AppMode = AppMode.Launcher;
 
     function minNumber(a: number, b: number): number {
@@ -288,6 +310,14 @@ namespace AIcamera {
             return 0;
         }
         return ((buf[offset + 1] & 0xFF) << 8) | (buf[offset] & 0xFF);
+    }
+
+    function i16le(buf: Buffer, offset: number): number {
+        let value = u16le(buf, offset);
+        if (value >= 0x8000) {
+            value -= 0x10000;
+        }
+        return value;
     }
 
     function crc8(data: Buffer, length: number): number {
@@ -757,6 +787,9 @@ namespace AIcamera {
         if (mode == AppMode.BallRecognition) {
             return "ball";
         }
+        if (mode == AppMode.LineRecognition) {
+            return "line";
+        }
         return "unknown";
     }
 
@@ -800,6 +833,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.BallRecognition as number)) {
             currentMode = AppMode.BallRecognition;
+            return true;
+        }
+        if (id == (AppMode.LineRecognition as number)) {
+            currentMode = AppMode.LineRecognition;
             return true;
         }
         return false;
@@ -1070,6 +1107,26 @@ namespace AIcamera {
         return true;
     }
 
+    function parseLinePacket(raw: Buffer): boolean {
+        if (!raw || raw.length < LINE_RESULT_LEN) {
+            return false;
+        }
+
+        const result = pins.createBuffer(LINE_RESULT_LEN);
+        for (let i = 0; i < LINE_RESULT_LEN; i++) {
+            result[i] = raw[i] & 0xFF;
+        }
+        lineResultCache = result;
+
+        lineDetectedCache = lineResultCache[0] & 0xFF;
+        if (lineDetectedCache != 0) {
+            lineDirectionCache = (lineResultCache[1] & 0xFF) == 1
+                ? (LineDirection.Right as number)
+                : (LineDirection.Left as number);
+        }
+        return true;
+    }
+
     function ballTargetOffset(objectIndex: number): number {
         let index = objectIndex | 0;
         if (index < 1 || index > ballRecordCountCache) {
@@ -1134,6 +1191,11 @@ namespace AIcamera {
         const totalLen = BALL_RESULT_HEAD_LEN + recordCount * BALL_TARGET_STRIDE;
         const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
         return parseBallPacket(raw);
+    }
+
+    function refreshLineResultInternal(): boolean {
+        const raw = regReadRetry(REG_RESULT_BASE, LINE_RESULT_LEN, 2);
+        return parseLinePacket(raw);
     }
 
     //% block="IIC 初始化AI摄像头"
@@ -1295,6 +1357,10 @@ namespace AIcamera {
         }
         if (modeId == (AppMode.BallRecognition as number)) {
             refreshBallResultInternal();
+            return;
+        }
+        if (modeId == (AppMode.LineRecognition as number)) {
+            refreshLineResultInternal();
             return;
         }
     }
@@ -1754,6 +1820,46 @@ namespace AIcamera {
             return u16le(ballTargetsCache, offset + 6);
         }
         return u16le(ballTargetsCache, offset + 8);
+    }
+
+    //% block="refresh line recognition result"
+    //% blockHidden=1
+    //% weight=36
+    //% group="Line"
+    export function refreshLineResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshLineResultInternal();
+    }
+
+    //% block="detected line recognition line"
+    //% weight=35
+    //% group="Line"
+    export function detectedLine(): boolean {
+        return lineDetectedCache != 0;
+    }
+
+    //% block="detected line recognition black line offset %direction"
+    //% direction.defl=LineDirection.Left
+    //% weight=34
+    //% group="Line"
+    export function lineDirection(direction: LineDirection = LineDirection.Left): boolean {
+        return lineDetectedCache != 0 && lineDirectionCache == (direction as number);
+    }
+
+    //% block="get line recognition %data value"
+    //% data.defl=LineValue.Offset
+    //% weight=33
+    //% group="Line"
+    export function lineValue(data: LineValue = LineValue.Offset): number {
+        if (data == LineValue.Offset) {
+            return i16le(lineResultCache, 14);
+        }
+        if (data == LineValue.Angle) {
+            return i16le(lineResultCache, 16);
+        }
+        return u16le(lineResultCache, 18);
     }
 
     //% block="mode name %mode"
