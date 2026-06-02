@@ -30,6 +30,9 @@ namespace AIcamera {
     const OBJECT_MAX_TARGETS = 8;
     const OBJECT_MAX_LABEL_BYTES = 24;
     const OBJECT_RESULT_MAX_LEN = OBJECT_RESULT_HEAD_LEN + OBJECT_MAX_TARGETS * (OBJECT_RECORD_HEAD_LEN + OBJECT_MAX_LABEL_BYTES);
+    const TRACKING_RESULT_HEAD_LEN = 2;
+    const TRACKING_TARGET_STRIDE = 11;
+    const TRACKING_MAX_TARGETS = 1;
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -102,6 +105,9 @@ namespace AIcamera {
     let objectIdsCache = pins.createBuffer(0);
     let objectConfidenceCache = pins.createBuffer(0);
     let objectLabelsCache: string[] = [];
+    let trackingCountCache = 0;
+    let trackingRecordCountCache = 0;
+    let trackingTargetsCache = pins.createBuffer(0);
     let lineDetectedCache = 0;
     let lineDirectionCache = 0;
     let lineResultCache = pins.createBuffer(LINE_RESULT_LEN);
@@ -143,6 +149,8 @@ namespace AIcamera {
         McOcr = 0x20,
         //% block="line recognition"
         LineRecognition = 0x21,
+        //% block="object tracking"
+        ObjectTracking = 0x22,
     }
 
     export enum RgbColor {
@@ -254,6 +262,21 @@ namespace AIcamera {
         Id = 0,
         //% block="confidence"
         Confidence = 1,
+    }
+
+    export enum ObjectTrackingValue {
+        //% block="x coordinate"
+        X = 0,
+        //% block="y coordinate"
+        Y = 1,
+        //% block="id"
+        Id = 2,
+        //% block="confidence"
+        Confidence = 3,
+        //% block="width"
+        Width = 4,
+        //% block="height"
+        Height = 5,
     }
 
     export enum LineDirection {
@@ -828,6 +851,9 @@ namespace AIcamera {
         if (mode == AppMode.LineRecognition) {
             return "line";
         }
+        if (mode == AppMode.ObjectTracking) {
+            return "tracking";
+        }
         return "unknown";
     }
 
@@ -883,6 +909,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.LineRecognition as number)) {
             currentMode = AppMode.LineRecognition;
+            return true;
+        }
+        if (id == (AppMode.ObjectTracking as number)) {
+            currentMode = AppMode.ObjectTracking;
             return true;
         }
         return false;
@@ -1200,6 +1230,27 @@ namespace AIcamera {
         return true;
     }
 
+    function parseTrackingPacket(raw: Buffer): boolean {
+        if (!raw || raw.length < TRACKING_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        trackingCountCache = raw[0] & 0xFF;
+        let recordCount = raw[1] & 0xFF;
+        recordCount = minNumber(recordCount, trackingCountCache);
+        recordCount = minNumber(recordCount, TRACKING_MAX_TARGETS);
+        const availableRecords = ((raw.length - TRACKING_RESULT_HEAD_LEN) / TRACKING_TARGET_STRIDE) | 0;
+        recordCount = minNumber(recordCount, availableRecords);
+        trackingRecordCountCache = recordCount;
+
+        const targets = pins.createBuffer(recordCount * TRACKING_TARGET_STRIDE);
+        for (let i = 0; i < targets.length; i++) {
+            targets[i] = raw[TRACKING_RESULT_HEAD_LEN + i] & 0xFF;
+        }
+        trackingTargetsCache = targets;
+        return true;
+    }
+
     function parseLinePacket(raw: Buffer): boolean {
         if (!raw || raw.length < LINE_RESULT_LEN) {
             return false;
@@ -1250,6 +1301,14 @@ namespace AIcamera {
             return -1;
         }
         return index - 1;
+    }
+
+    function trackingTargetOffset(objectIndex: number): number {
+        let index = objectIndex | 0;
+        if (index < 1 || index > trackingRecordCountCache) {
+            return -1;
+        }
+        return (index - 1) * TRACKING_TARGET_STRIDE;
     }
 
     function refreshFaceResultInternal(): boolean {
@@ -1313,6 +1372,20 @@ namespace AIcamera {
     function refreshObjectResultInternal(): boolean {
         const raw = regReadBytes(REG_RESULT_BASE, OBJECT_RESULT_MAX_LEN, ioChunk, 3);
         return parseObjectPacket(raw);
+    }
+
+    function refreshTrackingResultInternal(): boolean {
+        const head = regReadRetry(REG_RESULT_BASE, TRACKING_RESULT_HEAD_LEN, 2);
+        if (!head || head.length < TRACKING_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        let recordCount = head[1] & 0xFF;
+        recordCount = minNumber(recordCount, head[0] & 0xFF);
+        recordCount = minNumber(recordCount, TRACKING_MAX_TARGETS);
+        const totalLen = TRACKING_RESULT_HEAD_LEN + recordCount * TRACKING_TARGET_STRIDE;
+        const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
+        return parseTrackingPacket(raw);
     }
 
     function refreshLineResultInternal(): boolean {
@@ -1503,6 +1576,10 @@ namespace AIcamera {
         }
         if (modeId == (AppMode.LineRecognition as number)) {
             refreshLineResultInternal();
+            return;
+        }
+        if (modeId == (AppMode.ObjectTracking as number)) {
+            refreshTrackingResultInternal();
             return;
         }
     }
@@ -2015,6 +2092,62 @@ namespace AIcamera {
             return minNumber((objectConfidenceCache[index] & 0xFF) / 100.0, 1.0);
         }
         return objectIdsCache[index] & 0xFF;
+    }
+
+    //% block="refresh object tracking result"
+    //% blockHidden=1
+    //% weight=31
+    //% group="Tracking"
+    export function refreshObjectTrackingResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshTrackingResultInternal();
+    }
+
+    //% block="object tracking has target"
+    //% weight=30
+    //% group="Tracking"
+    export function detectedObjectTracking(): boolean {
+        return trackingCountCache > 0;
+    }
+
+    //% block="object tracking target lost"
+    //% weight=28
+    //% group="Tracking"
+    export function objectTrackingLost(): boolean {
+        const offset = trackingTargetOffset(1);
+        if (offset < 0) {
+            return false;
+        }
+        return (trackingTargetsCache[offset + 2] & 0xFF) != 0;
+    }
+
+    //% block="get object tracking target %data value"
+    //% data.defl=ObjectTrackingValue.X
+    //% weight=27
+    //% group="Tracking"
+    export function objectTrackingValue(data: ObjectTrackingValue = ObjectTrackingValue.X): number {
+        const offset = trackingTargetOffset(1);
+        if (offset < 0) {
+            return 0;
+        }
+        if (data == ObjectTrackingValue.X) {
+            return u16le(trackingTargetsCache, offset + 3);
+        }
+        if (data == ObjectTrackingValue.Y) {
+            return u16le(trackingTargetsCache, offset + 5);
+        }
+        if (data == ObjectTrackingValue.Id) {
+            return trackingTargetsCache[offset] & 0xFF;
+        }
+        if (data == ObjectTrackingValue.Confidence) {
+            return minNumber((trackingTargetsCache[offset + 1] & 0xFF) / 100.0, 1.0);
+        }
+        if (data == ObjectTrackingValue.Width) {
+            return u16le(trackingTargetsCache, offset + 7);
+        }
+        return u16le(trackingTargetsCache, offset + 9);
     }
 
     //% block="refresh line recognition result"

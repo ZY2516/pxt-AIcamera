@@ -19,6 +19,7 @@ Implemented app modes:
 - `object recognition (0x1F)`
 - `ocr (0x20)`
 - `line recognition (0x21)`
+- `object tracking (0x22)`
 
 Not included by design (auth/SN-key related set):
 
