@@ -33,6 +33,12 @@ namespace AIcamera {
     const TRACKING_RESULT_HEAD_LEN = 2;
     const TRACKING_TARGET_STRIDE = 11;
     const TRACKING_MAX_TARGETS = 1;
+    const EXPRESSION_RESULT_HEAD_LEN = 2;
+    const EXPRESSION_TARGET_STRIDE = 11;
+    const EXPRESSION_RECORD_HEAD_LEN = 12;
+    const EXPRESSION_MAX_FACES = 10;
+    const EXPRESSION_MAX_LABEL_BYTES = 12;
+    const EXPRESSION_RESULT_MAX_LEN = EXPRESSION_RESULT_HEAD_LEN + EXPRESSION_MAX_FACES * (EXPRESSION_RECORD_HEAD_LEN + EXPRESSION_MAX_LABEL_BYTES);
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -108,6 +114,10 @@ namespace AIcamera {
     let trackingCountCache = 0;
     let trackingRecordCountCache = 0;
     let trackingTargetsCache = pins.createBuffer(0);
+    let expressionCountCache = 0;
+    let expressionRecordCountCache = 0;
+    let expressionTargetsCache = pins.createBuffer(0);
+    let expressionLabelsCache: string[] = [];
     let lineDetectedCache = 0;
     let lineDirectionCache = 0;
     let lineResultCache = pins.createBuffer(LINE_RESULT_LEN);
@@ -151,6 +161,8 @@ namespace AIcamera {
         LineRecognition = 0x21,
         //% block="object tracking"
         ObjectTracking = 0x22,
+        //% block="expression recognition"
+        ExpressionRecognition = 0x23,
     }
 
     export enum RgbColor {
@@ -277,6 +289,38 @@ namespace AIcamera {
         Width = 4,
         //% block="height"
         Height = 5,
+    }
+
+    export enum ExpressionValue {
+        //% block="x coordinate"
+        X = 0,
+        //% block="y coordinate"
+        Y = 1,
+        //% block="expression id"
+        ExpressionId = 2,
+        //% block="confidence"
+        Confidence = 3,
+        //% block="width"
+        Width = 4,
+        //% block="height"
+        Height = 5,
+    }
+
+    export enum ExpressionType {
+        //% block="happy"
+        Happy = 0,
+        //% block="sad"
+        Sad = 1,
+        //% block="angry"
+        Angry = 2,
+        //% block="surprise"
+        Surprise = 3,
+        //% block="fear"
+        Fear = 4,
+        //% block="disgust"
+        Disgust = 5,
+        //% block="neutral"
+        Neutral = 6,
     }
 
     export enum LineDirection {
@@ -854,6 +898,9 @@ namespace AIcamera {
         if (mode == AppMode.ObjectTracking) {
             return "tracking";
         }
+        if (mode == AppMode.ExpressionRecognition) {
+            return "expression";
+        }
         return "unknown";
     }
 
@@ -913,6 +960,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.ObjectTracking as number)) {
             currentMode = AppMode.ObjectTracking;
+            return true;
+        }
+        if (id == (AppMode.ExpressionRecognition as number)) {
+            currentMode = AppMode.ExpressionRecognition;
             return true;
         }
         return false;
@@ -1251,6 +1302,60 @@ namespace AIcamera {
         return true;
     }
 
+    function parseExpressionPacket(raw: Buffer): boolean {
+        if (!raw || raw.length < EXPRESSION_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        expressionCountCache = raw[0] & 0xFF;
+        let recordCount = raw[1] & 0xFF;
+        recordCount = minNumber(recordCount, expressionCountCache);
+        recordCount = minNumber(recordCount, EXPRESSION_MAX_FACES);
+
+        const targets = pins.createBuffer(recordCount * EXPRESSION_TARGET_STRIDE);
+        const labels: string[] = [];
+        let offset = EXPRESSION_RESULT_HEAD_LEN;
+        let parsedCount = 0;
+
+        for (let i = 0; i < recordCount; i++) {
+            if (offset + EXPRESSION_RECORD_HEAD_LEN > raw.length) {
+                break;
+            }
+
+            const out = parsedCount * EXPRESSION_TARGET_STRIDE;
+            targets[out] = raw[offset] & 0xFF;
+            targets[out + 1] = raw[offset + 1] & 0xFF;
+            targets[out + 2] = raw[offset + 2] & 0xFF;
+            targets[out + 3] = raw[offset + 3] & 0xFF;
+            targets[out + 4] = raw[offset + 4] & 0xFF;
+            targets[out + 5] = raw[offset + 5] & 0xFF;
+            targets[out + 6] = raw[offset + 6] & 0xFF;
+            targets[out + 7] = raw[offset + 7] & 0xFF;
+            targets[out + 8] = raw[offset + 8] & 0xFF;
+            targets[out + 9] = raw[offset + 9] & 0xFF;
+            targets[out + 10] = raw[offset + 10] & 0xFF;
+
+            let labelLen = raw[offset + 11] & 0xFF;
+            if (labelLen > EXPRESSION_MAX_LABEL_BYTES) {
+                labelLen = EXPRESSION_MAX_LABEL_BYTES;
+            }
+            offset += EXPRESSION_RECORD_HEAD_LEN;
+
+            if (offset + labelLen > raw.length) {
+                break;
+            }
+
+            labels.push(labelLen > 0 ? utf8DecodePart(raw, offset, labelLen) : "");
+            offset += labelLen;
+            parsedCount += 1;
+        }
+
+        expressionRecordCountCache = parsedCount;
+        expressionTargetsCache = targets;
+        expressionLabelsCache = labels;
+        return true;
+    }
+
     function parseLinePacket(raw: Buffer): boolean {
         if (!raw || raw.length < LINE_RESULT_LEN) {
             return false;
@@ -1309,6 +1414,58 @@ namespace AIcamera {
             return -1;
         }
         return (index - 1) * TRACKING_TARGET_STRIDE;
+    }
+
+    function expressionTargetOffset(expressionIndex: number): number {
+        let index = expressionIndex | 0;
+        if (index < 1 || index > expressionRecordCountCache) {
+            return -1;
+        }
+        return (index - 1) * EXPRESSION_TARGET_STRIDE;
+    }
+
+    function expressionTypeName(expression: ExpressionType): string {
+        if (expression == ExpressionType.Happy) {
+            return "开心";
+        }
+        if (expression == ExpressionType.Sad) {
+            return "伤心";
+        }
+        if (expression == ExpressionType.Angry) {
+            return "生气";
+        }
+        if (expression == ExpressionType.Surprise) {
+            return "惊讶";
+        }
+        if (expression == ExpressionType.Fear) {
+            return "害怕";
+        }
+        if (expression == ExpressionType.Disgust) {
+            return "厌恶";
+        }
+        return "平静";
+    }
+
+    function expressionTypeId(expression: ExpressionType): number {
+        if (expression == ExpressionType.Happy) {
+            return 3;
+        }
+        if (expression == ExpressionType.Sad) {
+            return 4;
+        }
+        if (expression == ExpressionType.Angry) {
+            return 0;
+        }
+        if (expression == ExpressionType.Surprise) {
+            return 5;
+        }
+        if (expression == ExpressionType.Fear) {
+            return 2;
+        }
+        if (expression == ExpressionType.Disgust) {
+            return 1;
+        }
+        return 6;
     }
 
     function refreshFaceResultInternal(): boolean {
@@ -1386,6 +1543,11 @@ namespace AIcamera {
         const totalLen = TRACKING_RESULT_HEAD_LEN + recordCount * TRACKING_TARGET_STRIDE;
         const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
         return parseTrackingPacket(raw);
+    }
+
+    function refreshExpressionResultInternal(): boolean {
+        const raw = regReadBytes(REG_RESULT_BASE, EXPRESSION_RESULT_MAX_LEN, ioChunk, 3);
+        return parseExpressionPacket(raw);
     }
 
     function refreshLineResultInternal(): boolean {
@@ -1580,6 +1742,10 @@ namespace AIcamera {
         }
         if (modeId == (AppMode.ObjectTracking as number)) {
             refreshTrackingResultInternal();
+            return;
+        }
+        if (modeId == (AppMode.ExpressionRecognition as number)) {
+            refreshExpressionResultInternal();
             return;
         }
     }
@@ -2148,6 +2314,88 @@ namespace AIcamera {
             return u16le(trackingTargetsCache, offset + 7);
         }
         return u16le(trackingTargetsCache, offset + 9);
+    }
+
+    //% block="refresh expression recognition result"
+    //% blockHidden=1
+    //% weight=26
+    //% group="Expression"
+    export function refreshExpressionResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshExpressionResultInternal();
+    }
+
+    //% block="detected expression recognition face"
+    //% weight=25
+    //% group="Expression"
+    export function detectedExpressionRecognition(): boolean {
+        return expressionCountCache > 0;
+    }
+
+    //% block="expression recognition face count"
+    //% weight=24
+    //% group="Expression"
+    export function expressionRecognitionCount(): number {
+        return expressionCountCache;
+    }
+
+    //% block="expression recognition expression %expressionIndex name"
+    //% expressionIndex.min=1 expressionIndex.max=10 expressionIndex.defl=1
+    //% weight=23
+    //% group="Expression"
+    export function expressionRecognitionName(expressionIndex: number = 1): string {
+        const offset = expressionTargetOffset(expressionIndex);
+        const index = (expressionIndex | 0) - 1;
+        if (offset < 0 || index < 0 || index >= expressionLabelsCache.length) {
+            return "";
+        }
+        return expressionLabelsCache[index];
+    }
+
+    //% block="detected expression recognition expression %expressionIndex is %expression"
+    //% expressionIndex.min=1 expressionIndex.max=10 expressionIndex.defl=1
+    //% expression.defl=ExpressionType.Happy
+    //% weight=22
+    //% group="Expression"
+    export function detectedExpression(expressionIndex: number = 1, expression: ExpressionType = ExpressionType.Happy): boolean {
+        const offset = expressionTargetOffset(expressionIndex);
+        if (offset < 0) {
+            return false;
+        }
+        if ((expressionTargetsCache[offset + 1] & 0xFF) == expressionTypeId(expression)) {
+            return true;
+        }
+        return expressionRecognitionName(expressionIndex) == expressionTypeName(expression);
+    }
+
+    //% block="get expression recognition expression %expressionIndex %data value"
+    //% expressionIndex.min=1 expressionIndex.max=10 expressionIndex.defl=1
+    //% data.defl=ExpressionValue.X
+    //% weight=21
+    //% group="Expression"
+    export function expressionRecognitionValue(expressionIndex: number = 1, data: ExpressionValue = ExpressionValue.X): number {
+        const offset = expressionTargetOffset(expressionIndex);
+        if (offset < 0) {
+            return 0;
+        }
+        if (data == ExpressionValue.X) {
+            return u16le(expressionTargetsCache, offset + 3);
+        }
+        if (data == ExpressionValue.Y) {
+            return u16le(expressionTargetsCache, offset + 5);
+        }
+        if (data == ExpressionValue.ExpressionId) {
+            return expressionTargetsCache[offset] & 0xFF;
+        }
+        if (data == ExpressionValue.Confidence) {
+            return minNumber((expressionTargetsCache[offset + 2] & 0xFF) / 100.0, 1.0);
+        }
+        if (data == ExpressionValue.Width) {
+            return u16le(expressionTargetsCache, offset + 7);
+        }
+        return u16le(expressionTargetsCache, offset + 9);
     }
 
     //% block="refresh line recognition result"
