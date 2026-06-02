@@ -16,6 +16,7 @@ Implemented app modes:
 - `settings (0x16)`
 - `sound touch (0x1B)`
 - `ball recognition (0x1E)`
+- `object recognition (0x1F)`
 - `ocr (0x20)`
 - `line recognition (0x21)`
 

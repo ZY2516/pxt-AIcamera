@@ -25,6 +25,11 @@ namespace AIcamera {
     const BALL_MAX_TARGETS = 16;
     const LINE_RESULT_LEN = 20;
     const OCR_RESULT_HEAD_LEN = 3;
+    const OBJECT_RESULT_HEAD_LEN = 2;
+    const OBJECT_RECORD_HEAD_LEN = 3;
+    const OBJECT_MAX_TARGETS = 8;
+    const OBJECT_MAX_LABEL_BYTES = 24;
+    const OBJECT_RESULT_MAX_LEN = OBJECT_RESULT_HEAD_LEN + OBJECT_MAX_TARGETS * (OBJECT_RECORD_HEAD_LEN + OBJECT_MAX_LABEL_BYTES);
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -92,6 +97,11 @@ namespace AIcamera {
     let ballCountCache = 0;
     let ballRecordCountCache = 0;
     let ballTargetsCache = pins.createBuffer(0);
+    let objectCountCache = 0;
+    let objectRecordCountCache = 0;
+    let objectIdsCache = pins.createBuffer(0);
+    let objectConfidenceCache = pins.createBuffer(0);
+    let objectLabelsCache: string[] = [];
     let lineDetectedCache = 0;
     let lineDirectionCache = 0;
     let lineResultCache = pins.createBuffer(LINE_RESULT_LEN);
@@ -127,6 +137,8 @@ namespace AIcamera {
         SoundTouch = 0x1B,
         //% block="ball recognition"
         BallRecognition = 0x1E,
+        //% block="object recognition"
+        ObjectRecognition = 0x1F,
         //% block="ocr"
         McOcr = 0x20,
         //% block="line recognition"
@@ -235,6 +247,13 @@ namespace AIcamera {
         Width = 4,
         //% block="height"
         Height = 5,
+    }
+
+    export enum ObjectValue {
+        //% block="id"
+        Id = 0,
+        //% block="confidence"
+        Confidence = 1,
     }
 
     export enum LineDirection {
@@ -800,6 +819,9 @@ namespace AIcamera {
         if (mode == AppMode.BallRecognition) {
             return "ball";
         }
+        if (mode == AppMode.ObjectRecognition) {
+            return "object";
+        }
         if (mode == AppMode.McOcr) {
             return "ocr";
         }
@@ -849,6 +871,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.BallRecognition as number)) {
             currentMode = AppMode.BallRecognition;
+            return true;
+        }
+        if (id == (AppMode.ObjectRecognition as number)) {
+            currentMode = AppMode.ObjectRecognition;
             return true;
         }
         if (id == (AppMode.McOcr as number)) {
@@ -1127,6 +1153,53 @@ namespace AIcamera {
         return true;
     }
 
+    function parseObjectPacket(raw: Buffer): boolean {
+        if (!raw || raw.length < OBJECT_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        objectCountCache = raw[0] & 0xFF;
+        let recordCount = raw[1] & 0xFF;
+        recordCount = minNumber(recordCount, objectCountCache);
+        recordCount = minNumber(recordCount, OBJECT_MAX_TARGETS);
+
+        const ids = pins.createBuffer(recordCount);
+        const confidences = pins.createBuffer(recordCount);
+        const labels: string[] = [];
+        let offset = OBJECT_RESULT_HEAD_LEN;
+        let parsedCount = 0;
+
+        for (let i = 0; i < recordCount; i++) {
+            if (offset + OBJECT_RECORD_HEAD_LEN > raw.length) {
+                break;
+            }
+
+            const id = raw[offset] & 0xFF;
+            const confidence = raw[offset + 1] & 0xFF;
+            let labelLen = raw[offset + 2] & 0xFF;
+            if (labelLen > OBJECT_MAX_LABEL_BYTES) {
+                labelLen = OBJECT_MAX_LABEL_BYTES;
+            }
+            offset += OBJECT_RECORD_HEAD_LEN;
+
+            if (offset + labelLen > raw.length) {
+                break;
+            }
+
+            ids[parsedCount] = id;
+            confidences[parsedCount] = confidence;
+            labels.push(labelLen > 0 ? utf8DecodePart(raw, offset, labelLen) : "");
+            offset += labelLen;
+            parsedCount += 1;
+        }
+
+        objectRecordCountCache = parsedCount;
+        objectIdsCache = ids;
+        objectConfidenceCache = confidences;
+        objectLabelsCache = labels;
+        return true;
+    }
+
     function parseLinePacket(raw: Buffer): boolean {
         if (!raw || raw.length < LINE_RESULT_LEN) {
             return false;
@@ -1169,6 +1242,14 @@ namespace AIcamera {
             return -1;
         }
         return (index - 1) * BALL_TARGET_STRIDE;
+    }
+
+    function objectTargetIndex(objectIndex: number): number {
+        let index = objectIndex | 0;
+        if (index < 1 || index > objectRecordCountCache) {
+            return -1;
+        }
+        return index - 1;
     }
 
     function refreshFaceResultInternal(): boolean {
@@ -1227,6 +1308,11 @@ namespace AIcamera {
         const totalLen = BALL_RESULT_HEAD_LEN + recordCount * BALL_TARGET_STRIDE;
         const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
         return parseBallPacket(raw);
+    }
+
+    function refreshObjectResultInternal(): boolean {
+        const raw = regReadBytes(REG_RESULT_BASE, OBJECT_RESULT_MAX_LEN, ioChunk, 3);
+        return parseObjectPacket(raw);
     }
 
     function refreshLineResultInternal(): boolean {
@@ -1405,6 +1491,10 @@ namespace AIcamera {
         }
         if (modeId == (AppMode.BallRecognition as number)) {
             refreshBallResultInternal();
+            return;
+        }
+        if (modeId == (AppMode.ObjectRecognition as number)) {
+            refreshObjectResultInternal();
             return;
         }
         if (modeId == (AppMode.McOcr as number)) {
@@ -1872,6 +1962,59 @@ namespace AIcamera {
             return u16le(ballTargetsCache, offset + 6);
         }
         return u16le(ballTargetsCache, offset + 8);
+    }
+
+    //% block="refresh object recognition result"
+    //% blockHidden=1
+    //% weight=36
+    //% group="Object"
+    export function refreshObjectResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshObjectResultInternal();
+    }
+
+    //% block="detected object recognition object"
+    //% weight=35
+    //% group="Object"
+    export function detectedObjectRecognition(): boolean {
+        return objectCountCache > 0;
+    }
+
+    //% block="object recognition total count"
+    //% weight=34
+    //% group="Object"
+    export function objectRecognitionCount(): number {
+        return objectCountCache;
+    }
+
+    //% block="object recognition object %objectIndex name"
+    //% objectIndex.min=1 objectIndex.max=8 objectIndex.defl=1
+    //% weight=33
+    //% group="Object"
+    export function objectRecognitionName(objectIndex: number = 1): string {
+        const index = objectTargetIndex(objectIndex);
+        if (index < 0 || index >= objectLabelsCache.length) {
+            return "";
+        }
+        return objectLabelsCache[index];
+    }
+
+    //% block="get object recognition object %objectIndex %data value"
+    //% objectIndex.min=1 objectIndex.max=8 objectIndex.defl=1
+    //% data.defl=ObjectValue.Id
+    //% weight=32
+    //% group="Object"
+    export function objectRecognitionValue(objectIndex: number = 1, data: ObjectValue = ObjectValue.Id): number {
+        const index = objectTargetIndex(objectIndex);
+        if (index < 0) {
+            return 0;
+        }
+        if (data == ObjectValue.Confidence) {
+            return minNumber((objectConfidenceCache[index] & 0xFF) / 100.0, 1.0);
+        }
+        return objectIdsCache[index] & 0xFF;
     }
 
     //% block="refresh line recognition result"
