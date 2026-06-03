@@ -39,6 +39,12 @@ namespace AIcamera {
     const EXPRESSION_MAX_FACES = 10;
     const EXPRESSION_MAX_LABEL_BYTES = 12;
     const EXPRESSION_RESULT_MAX_LEN = EXPRESSION_RESULT_HEAD_LEN + EXPRESSION_MAX_FACES * (EXPRESSION_RECORD_HEAD_LEN + EXPRESSION_MAX_LABEL_BYTES);
+    const POSTURE_RESULT_HEAD_LEN = 2;
+    const POSTURE_TARGET_STRIDE = 11;
+    const POSTURE_RECORD_HEAD_LEN = 12;
+    const POSTURE_MAX_PEOPLE = 10;
+    const POSTURE_MAX_LABEL_BYTES = 12;
+    const POSTURE_RESULT_MAX_LEN = POSTURE_RESULT_HEAD_LEN + POSTURE_MAX_PEOPLE * (POSTURE_RECORD_HEAD_LEN + POSTURE_MAX_LABEL_BYTES);
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -118,6 +124,10 @@ namespace AIcamera {
     let expressionRecordCountCache = 0;
     let expressionTargetsCache = pins.createBuffer(0);
     let expressionLabelsCache: string[] = [];
+    let postureCountCache = 0;
+    let postureRecordCountCache = 0;
+    let postureTargetsCache = pins.createBuffer(0);
+    let postureLabelsCache: string[] = [];
     let lineDetectedCache = 0;
     let lineDirectionCache = 0;
     let lineResultCache = pins.createBuffer(LINE_RESULT_LEN);
@@ -163,6 +173,8 @@ namespace AIcamera {
         ObjectTracking = 0x22,
         //% block="expression recognition"
         ExpressionRecognition = 0x23,
+        //% block="posture recognition"
+        PostureRecognition = 0x24,
     }
 
     export enum RgbColor {
@@ -321,6 +333,42 @@ namespace AIcamera {
         Disgust = 5,
         //% block="neutral"
         Neutral = 6,
+    }
+
+    export enum PostureValue {
+        //% block="x coordinate"
+        X = 0,
+        //% block="y coordinate"
+        Y = 1,
+        //% block="id"
+        Id = 2,
+        //% block="confidence"
+        Confidence = 3,
+        //% block="width"
+        Width = 4,
+        //% block="height"
+        Height = 5,
+    }
+
+    export enum PostureType {
+        //% block="standing"
+        Standing = 1,
+        //% block="hand up"
+        HandUp = 2,
+        //% block="both hands up"
+        BothHandsUp = 3,
+        //% block="squatting"
+        Squatting = 4,
+        //% block="bending"
+        Bending = 5,
+        //% block="sitting"
+        Sitting = 6,
+        //% block="falling"
+        Falling = 7,
+        //% block="kneeling"
+        Kneeling = 8,
+        //% block="running"
+        Running = 9,
     }
 
     export enum LineDirection {
@@ -901,6 +949,9 @@ namespace AIcamera {
         if (mode == AppMode.ExpressionRecognition) {
             return "expression";
         }
+        if (mode == AppMode.PostureRecognition) {
+            return "posture";
+        }
         return "unknown";
     }
 
@@ -964,6 +1015,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.ExpressionRecognition as number)) {
             currentMode = AppMode.ExpressionRecognition;
+            return true;
+        }
+        if (id == (AppMode.PostureRecognition as number)) {
+            currentMode = AppMode.PostureRecognition;
             return true;
         }
         return false;
@@ -1356,6 +1411,60 @@ namespace AIcamera {
         return true;
     }
 
+    function parsePosturePacket(raw: Buffer): boolean {
+        if (!raw || raw.length < POSTURE_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        postureCountCache = raw[0] & 0xFF;
+        let recordCount = raw[1] & 0xFF;
+        recordCount = minNumber(recordCount, postureCountCache);
+        recordCount = minNumber(recordCount, POSTURE_MAX_PEOPLE);
+
+        const targets = pins.createBuffer(recordCount * POSTURE_TARGET_STRIDE);
+        const labels: string[] = [];
+        let offset = POSTURE_RESULT_HEAD_LEN;
+        let parsedCount = 0;
+
+        for (let i = 0; i < recordCount; i++) {
+            if (offset + POSTURE_RECORD_HEAD_LEN > raw.length) {
+                break;
+            }
+
+            const out = parsedCount * POSTURE_TARGET_STRIDE;
+            targets[out] = raw[offset] & 0xFF;
+            targets[out + 1] = raw[offset + 1] & 0xFF;
+            targets[out + 2] = raw[offset + 2] & 0xFF;
+            targets[out + 3] = raw[offset + 3] & 0xFF;
+            targets[out + 4] = raw[offset + 4] & 0xFF;
+            targets[out + 5] = raw[offset + 5] & 0xFF;
+            targets[out + 6] = raw[offset + 6] & 0xFF;
+            targets[out + 7] = raw[offset + 7] & 0xFF;
+            targets[out + 8] = raw[offset + 8] & 0xFF;
+            targets[out + 9] = raw[offset + 9] & 0xFF;
+            targets[out + 10] = raw[offset + 10] & 0xFF;
+
+            let labelLen = raw[offset + 11] & 0xFF;
+            if (labelLen > POSTURE_MAX_LABEL_BYTES) {
+                labelLen = POSTURE_MAX_LABEL_BYTES;
+            }
+            offset += POSTURE_RECORD_HEAD_LEN;
+
+            if (offset + labelLen > raw.length) {
+                break;
+            }
+
+            labels.push(labelLen > 0 ? utf8DecodePart(raw, offset, labelLen) : "");
+            offset += labelLen;
+            parsedCount += 1;
+        }
+
+        postureRecordCountCache = parsedCount;
+        postureTargetsCache = targets;
+        postureLabelsCache = labels;
+        return true;
+    }
+
     function parseLinePacket(raw: Buffer): boolean {
         if (!raw || raw.length < LINE_RESULT_LEN) {
             return false;
@@ -1424,6 +1533,14 @@ namespace AIcamera {
         return (index - 1) * EXPRESSION_TARGET_STRIDE;
     }
 
+    function postureTargetOffset(postureIndex: number): number {
+        let index = postureIndex | 0;
+        if (index < 1 || index > postureRecordCountCache) {
+            return -1;
+        }
+        return (index - 1) * POSTURE_TARGET_STRIDE;
+    }
+
     function expressionTypeName(expression: ExpressionType): string {
         if (expression == ExpressionType.Happy) {
             return "开心";
@@ -1466,6 +1583,41 @@ namespace AIcamera {
             return 1;
         }
         return 6;
+    }
+
+    function postureTypeName(posture: PostureType): string {
+        if (posture == PostureType.Standing) {
+            return "站立";
+        }
+        if (posture == PostureType.HandUp) {
+            return "举手";
+        }
+        if (posture == PostureType.BothHandsUp) {
+            return "双手举起";
+        }
+        if (posture == PostureType.Squatting) {
+            return "下蹲";
+        }
+        if (posture == PostureType.Bending) {
+            return "弯腰";
+        }
+        if (posture == PostureType.Sitting) {
+            return "坐";
+        }
+        if (posture == PostureType.Falling) {
+            return "跌倒";
+        }
+        if (posture == PostureType.Kneeling) {
+            return "跪";
+        }
+        if (posture == PostureType.Running) {
+            return "跑";
+        }
+        return "人体";
+    }
+
+    function postureTypeId(posture: PostureType): number {
+        return posture as number;
     }
 
     function refreshFaceResultInternal(): boolean {
@@ -1548,6 +1700,11 @@ namespace AIcamera {
     function refreshExpressionResultInternal(): boolean {
         const raw = regReadBytes(REG_RESULT_BASE, EXPRESSION_RESULT_MAX_LEN, ioChunk, 3);
         return parseExpressionPacket(raw);
+    }
+
+    function refreshPostureResultInternal(): boolean {
+        const raw = regReadBytes(REG_RESULT_BASE, POSTURE_RESULT_MAX_LEN, ioChunk, 3);
+        return parsePosturePacket(raw);
     }
 
     function refreshLineResultInternal(): boolean {
@@ -1746,6 +1903,10 @@ namespace AIcamera {
         }
         if (modeId == (AppMode.ExpressionRecognition as number)) {
             refreshExpressionResultInternal();
+            return;
+        }
+        if (modeId == (AppMode.PostureRecognition as number)) {
+            refreshPostureResultInternal();
             return;
         }
     }
@@ -2396,6 +2557,88 @@ namespace AIcamera {
             return u16le(expressionTargetsCache, offset + 7);
         }
         return u16le(expressionTargetsCache, offset + 9);
+    }
+
+    //% block="refresh posture recognition result"
+    //% blockHidden=1
+    //% weight=20
+    //% group="Posture"
+    export function refreshPostureResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshPostureResultInternal();
+    }
+
+    //% block="detected posture recognition person"
+    //% weight=19
+    //% group="Posture"
+    export function detectedPostureRecognition(): boolean {
+        return postureCountCache > 0;
+    }
+
+    //% block="posture recognition person count"
+    //% weight=18
+    //% group="Posture"
+    export function postureRecognitionCount(): number {
+        return postureCountCache;
+    }
+
+    //% block="posture recognition posture %postureIndex name"
+    //% postureIndex.min=1 postureIndex.max=10 postureIndex.defl=1
+    //% weight=17
+    //% group="Posture"
+    export function postureRecognitionName(postureIndex: number = 1): string {
+        const offset = postureTargetOffset(postureIndex);
+        const index = (postureIndex | 0) - 1;
+        if (offset < 0 || index < 0 || index >= postureLabelsCache.length) {
+            return "";
+        }
+        return postureLabelsCache[index];
+    }
+
+    //% block="detected posture recognition posture %postureIndex is %posture"
+    //% postureIndex.min=1 postureIndex.max=10 postureIndex.defl=1
+    //% posture.defl=PostureType.Standing
+    //% weight=16
+    //% group="Posture"
+    export function detectedPosture(postureIndex: number = 1, posture: PostureType = PostureType.Standing): boolean {
+        const offset = postureTargetOffset(postureIndex);
+        if (offset < 0) {
+            return false;
+        }
+        if ((postureTargetsCache[offset + 1] & 0xFF) == postureTypeId(posture)) {
+            return true;
+        }
+        return postureRecognitionName(postureIndex) == postureTypeName(posture);
+    }
+
+    //% block="get posture recognition posture %postureIndex %data value"
+    //% postureIndex.min=1 postureIndex.max=10 postureIndex.defl=1
+    //% data.defl=PostureValue.X
+    //% weight=15
+    //% group="Posture"
+    export function postureRecognitionValue(postureIndex: number = 1, data: PostureValue = PostureValue.X): number {
+        const offset = postureTargetOffset(postureIndex);
+        if (offset < 0) {
+            return 0;
+        }
+        if (data == PostureValue.X) {
+            return u16le(postureTargetsCache, offset + 3);
+        }
+        if (data == PostureValue.Y) {
+            return u16le(postureTargetsCache, offset + 5);
+        }
+        if (data == PostureValue.Id) {
+            return postureTargetsCache[offset] & 0xFF;
+        }
+        if (data == PostureValue.Confidence) {
+            return minNumber((postureTargetsCache[offset + 2] & 0xFF) / 100.0, 1.0);
+        }
+        if (data == PostureValue.Width) {
+            return u16le(postureTargetsCache, offset + 7);
+        }
+        return u16le(postureTargetsCache, offset + 9);
     }
 
     //% block="refresh line recognition result"

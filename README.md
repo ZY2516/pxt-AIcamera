@@ -21,6 +21,7 @@ Implemented app modes:
 - `line recognition (0x21)`
 - `object tracking (0x22)`
 - `expression recognition (0x23)`
+- `posture recognition (0x24)`
 
 Not included by design (auth/SN-key related set):
 
