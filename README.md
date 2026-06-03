@@ -22,6 +22,7 @@ Implemented app modes:
 - `object tracking (0x22)`
 - `expression recognition (0x23)`
 - `posture recognition (0x24)`
+- `color recognition (0x25)`
 
 Not included by design (auth/SN-key related set):
 

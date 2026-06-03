@@ -17,6 +17,7 @@ namespace AIcamera {
     const UART_CMD_WIFI_CONNECT = 0x41;
     const UART_CMD_WIFI_STATUS_QUERY = 0x42;
     const UART_CMD_WIFI_MAILBOX_ACK = 0x43;
+    const UART_CMD_COLOR_MODE = 0x44;
 
     const REG_APP_ID = 0;
     const REG_RESULT_BASE = 100;
@@ -45,6 +46,14 @@ namespace AIcamera {
     const POSTURE_MAX_PEOPLE = 10;
     const POSTURE_MAX_LABEL_BYTES = 12;
     const POSTURE_RESULT_MAX_LEN = POSTURE_RESULT_HEAD_LEN + POSTURE_MAX_PEOPLE * (POSTURE_RECORD_HEAD_LEN + POSTURE_MAX_LABEL_BYTES);
+    const COLOR_MODE_LEARN = 0;
+    const COLOR_MODE_RECOGNIZE = 1;
+    const COLOR_LEARN_RESULT_HEAD_LEN = 3;
+    const COLOR_LEARN_TARGET_STRIDE = 14;
+    const COLOR_LEARN_RECORD_HEAD_LEN = 15;
+    const COLOR_MAX_TARGETS = 10;
+    const COLOR_MAX_LABEL_BYTES = 12;
+    const COLOR_RESULT_MAX_LEN = COLOR_LEARN_RESULT_HEAD_LEN + COLOR_MAX_TARGETS * (COLOR_LEARN_RECORD_HEAD_LEN + COLOR_MAX_LABEL_BYTES);
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -128,6 +137,14 @@ namespace AIcamera {
     let postureRecordCountCache = 0;
     let postureTargetsCache = pins.createBuffer(0);
     let postureLabelsCache: string[] = [];
+    let colorModeCache = COLOR_MODE_LEARN;
+    let colorCountCache = 0;
+    let colorRecordCountCache = 0;
+    let colorTargetsCache = pins.createBuffer(0);
+    let colorLabelsCache: string[] = [];
+    let colorCenterIdCache = 0;
+    let colorCenterConfidenceCache = 0;
+    let colorCenterNameCache = "";
     let lineDetectedCache = 0;
     let lineDirectionCache = 0;
     let lineResultCache = pins.createBuffer(LINE_RESULT_LEN);
@@ -175,6 +192,8 @@ namespace AIcamera {
         ExpressionRecognition = 0x23,
         //% block="posture recognition"
         PostureRecognition = 0x24,
+        //% block="color recognition"
+        ColorRecognition = 0x25,
     }
 
     export enum RgbColor {
@@ -369,6 +388,41 @@ namespace AIcamera {
         Kneeling = 8,
         //% block="running"
         Running = 9,
+    }
+
+    export enum ColorRecognitionMode {
+        //% block="learn mode"
+        Learn = 0,
+        //% block="recognize mode"
+        Recognize = 1,
+    }
+
+    export enum ColorValue {
+        //% block="x coordinate"
+        X = 0,
+        //% block="y coordinate"
+        Y = 1,
+        //% block="id"
+        Id = 2,
+        //% block="confidence"
+        Confidence = 3,
+        //% block="width"
+        Width = 4,
+        //% block="height"
+        Height = 5,
+        //% block="r"
+        R = 6,
+        //% block="g"
+        G = 7,
+        //% block="b"
+        B = 8,
+    }
+
+    export enum ColorCenterValue {
+        //% block="id"
+        Id = 0,
+        //% block="confidence"
+        Confidence = 1,
     }
 
     export enum LineDirection {
@@ -952,6 +1006,9 @@ namespace AIcamera {
         if (mode == AppMode.PostureRecognition) {
             return "posture";
         }
+        if (mode == AppMode.ColorRecognition) {
+            return "color";
+        }
         return "unknown";
     }
 
@@ -1019,6 +1076,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.PostureRecognition as number)) {
             currentMode = AppMode.PostureRecognition;
+            return true;
+        }
+        if (id == (AppMode.ColorRecognition as number)) {
+            currentMode = AppMode.ColorRecognition;
             return true;
         }
         return false;
@@ -1465,6 +1526,95 @@ namespace AIcamera {
         return true;
     }
 
+    function parseColorPacket(raw: Buffer): boolean {
+        if (!raw || raw.length < 1) {
+            return false;
+        }
+
+        colorModeCache = raw[0] & 0xFF;
+        if (colorModeCache == COLOR_MODE_RECOGNIZE) {
+            if (raw.length < 4) {
+                return false;
+            }
+
+            colorCenterIdCache = raw[1] & 0xFF;
+            colorCenterConfidenceCache = minNumber((raw[2] & 0xFF) / 100.0, 1.0);
+
+            let labelLen = raw[3] & 0xFF;
+            if (labelLen > COLOR_MAX_LABEL_BYTES) {
+                labelLen = COLOR_MAX_LABEL_BYTES;
+            }
+            if (4 + labelLen > raw.length) {
+                return false;
+            }
+            colorCenterNameCache = labelLen > 0 ? utf8DecodePart(raw, 4, labelLen) : "";
+            colorCountCache = colorCenterIdCache > 0 ? 1 : 0;
+            colorRecordCountCache = 0;
+            colorTargetsCache = pins.createBuffer(0);
+            colorLabelsCache = [];
+            return true;
+        }
+
+        if (raw.length < COLOR_LEARN_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        colorModeCache = COLOR_MODE_LEARN;
+        colorCountCache = raw[1] & 0xFF;
+        let recordCount = raw[2] & 0xFF;
+        recordCount = minNumber(recordCount, colorCountCache);
+        recordCount = minNumber(recordCount, COLOR_MAX_TARGETS);
+
+        const targets = pins.createBuffer(recordCount * COLOR_LEARN_TARGET_STRIDE);
+        const labels: string[] = [];
+        let offset = COLOR_LEARN_RESULT_HEAD_LEN;
+        let parsedCount = 0;
+
+        for (let i = 0; i < recordCount; i++) {
+            if (offset + COLOR_LEARN_RECORD_HEAD_LEN > raw.length) {
+                break;
+            }
+
+            const out = parsedCount * COLOR_LEARN_TARGET_STRIDE;
+            targets[out] = raw[offset] & 0xFF;
+            targets[out + 1] = raw[offset + 1] & 0xFF;
+            targets[out + 2] = raw[offset + 2] & 0xFF;
+            targets[out + 3] = raw[offset + 3] & 0xFF;
+            targets[out + 4] = raw[offset + 4] & 0xFF;
+            targets[out + 5] = raw[offset + 5] & 0xFF;
+            targets[out + 6] = raw[offset + 6] & 0xFF;
+            targets[out + 7] = raw[offset + 7] & 0xFF;
+            targets[out + 8] = raw[offset + 8] & 0xFF;
+            targets[out + 9] = raw[offset + 9] & 0xFF;
+            targets[out + 10] = raw[offset + 10] & 0xFF;
+            targets[out + 11] = raw[offset + 11] & 0xFF;
+            targets[out + 12] = raw[offset + 12] & 0xFF;
+            targets[out + 13] = raw[offset + 13] & 0xFF;
+
+            let labelLen = raw[offset + 14] & 0xFF;
+            if (labelLen > COLOR_MAX_LABEL_BYTES) {
+                labelLen = COLOR_MAX_LABEL_BYTES;
+            }
+            offset += COLOR_LEARN_RECORD_HEAD_LEN;
+
+            if (offset + labelLen > raw.length) {
+                break;
+            }
+
+            labels.push(labelLen > 0 ? utf8DecodePart(raw, offset, labelLen) : "");
+            offset += labelLen;
+            parsedCount += 1;
+        }
+
+        colorRecordCountCache = parsedCount;
+        colorTargetsCache = targets;
+        colorLabelsCache = labels;
+        colorCenterIdCache = 0;
+        colorCenterConfidenceCache = 0;
+        colorCenterNameCache = "";
+        return true;
+    }
+
     function parseLinePacket(raw: Buffer): boolean {
         if (!raw || raw.length < LINE_RESULT_LEN) {
             return false;
@@ -1539,6 +1689,14 @@ namespace AIcamera {
             return -1;
         }
         return (index - 1) * POSTURE_TARGET_STRIDE;
+    }
+
+    function colorTargetOffset(colorIndex: number): number {
+        let index = colorIndex | 0;
+        if (index < 1 || index > colorRecordCountCache) {
+            return -1;
+        }
+        return (index - 1) * COLOR_LEARN_TARGET_STRIDE;
     }
 
     function expressionTypeName(expression: ExpressionType): string {
@@ -1705,6 +1863,11 @@ namespace AIcamera {
     function refreshPostureResultInternal(): boolean {
         const raw = regReadBytes(REG_RESULT_BASE, POSTURE_RESULT_MAX_LEN, ioChunk, 3);
         return parsePosturePacket(raw);
+    }
+
+    function refreshColorResultInternal(): boolean {
+        const raw = regReadBytes(REG_RESULT_BASE, COLOR_RESULT_MAX_LEN, ioChunk, 3);
+        return parseColorPacket(raw);
     }
 
     function refreshLineResultInternal(): boolean {
@@ -1907,6 +2070,10 @@ namespace AIcamera {
         }
         if (modeId == (AppMode.PostureRecognition as number)) {
             refreshPostureResultInternal();
+            return;
+        }
+        if (modeId == (AppMode.ColorRecognition as number)) {
+            refreshColorResultInternal();
             return;
         }
     }
@@ -2639,6 +2806,122 @@ namespace AIcamera {
             return u16le(postureTargetsCache, offset + 7);
         }
         return u16le(postureTargetsCache, offset + 9);
+    }
+
+    //% block="set color recognition mode to %mode"
+    //% mode.defl=ColorRecognitionMode.Learn
+    //% weight=20
+    //% group="Color"
+    export function setColorRecognitionMode(mode: ColorRecognitionMode = ColorRecognitionMode.Learn): void {
+        if (!isCameraReady()) {
+            return;
+        }
+
+        const modeValue = mode == ColorRecognitionMode.Recognize ? COLOR_MODE_RECOGNIZE : COLOR_MODE_LEARN;
+        const modeId = detectModeIdFromDevice();
+        if (modeId != (AppMode.ColorRecognition as number)) {
+            if (!switchModeInternal(AppMode.ColorRecognition, 2, 6000)) {
+                return;
+            }
+        }
+        if (sendUartCommandArray(UART_CMD_COLOR_MODE, [modeValue])) {
+            colorModeCache = modeValue;
+            basic.pause(30);
+            refreshColorResultInternal();
+        }
+    }
+
+    //% block="refresh color recognition result"
+    //% blockHidden=1
+    //% weight=19
+    //% group="Color"
+    export function refreshColorResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshColorResultInternal();
+    }
+
+    //% block="detected color recognition color"
+    //% weight=18
+    //% group="Color"
+    export function detectedColorRecognition(): boolean {
+        return colorModeCache == COLOR_MODE_LEARN && colorCountCache > 0;
+    }
+
+    //% block="color recognition learned color count"
+    //% weight=17
+    //% group="Color"
+    export function colorRecognitionCount(): number {
+        return colorCountCache;
+    }
+
+    //% block="color recognition learned color %colorIndex name"
+    //% colorIndex.min=1 colorIndex.max=10 colorIndex.defl=1
+    //% weight=16
+    //% group="Color"
+    export function colorRecognitionName(colorIndex: number = 1): string {
+        const offset = colorTargetOffset(colorIndex);
+        const index = (colorIndex | 0) - 1;
+        if (offset < 0 || index < 0 || index >= colorLabelsCache.length) {
+            return "";
+        }
+        return colorLabelsCache[index];
+    }
+
+    //% block="get color recognition learned color %colorIndex %data value"
+    //% colorIndex.min=1 colorIndex.max=10 colorIndex.defl=1
+    //% data.defl=ColorValue.X
+    //% weight=15
+    //% group="Color"
+    export function colorRecognitionValue(colorIndex: number = 1, data: ColorValue = ColorValue.X): number {
+        const offset = colorTargetOffset(colorIndex);
+        if (offset < 0) {
+            return 0;
+        }
+        if (data == ColorValue.X) {
+            return u16le(colorTargetsCache, offset + 3);
+        }
+        if (data == ColorValue.Y) {
+            return u16le(colorTargetsCache, offset + 5);
+        }
+        if (data == ColorValue.Id) {
+            return u16le(colorTargetsCache, offset);
+        }
+        if (data == ColorValue.Confidence) {
+            return minNumber((colorTargetsCache[offset + 2] & 0xFF) / 100.0, 1.0);
+        }
+        if (data == ColorValue.Width) {
+            return u16le(colorTargetsCache, offset + 7);
+        }
+        if (data == ColorValue.Height) {
+            return u16le(colorTargetsCache, offset + 9);
+        }
+        if (data == ColorValue.R) {
+            return colorTargetsCache[offset + 11] & 0xFF;
+        }
+        if (data == ColorValue.G) {
+            return colorTargetsCache[offset + 12] & 0xFF;
+        }
+        return colorTargetsCache[offset + 13] & 0xFF;
+    }
+
+    //% block="color recognition center color name"
+    //% weight=14
+    //% group="Color"
+    export function colorRecognitionCenterName(): string {
+        return colorCenterNameCache;
+    }
+
+    //% block="get color recognition center color %data value"
+    //% data.defl=ColorCenterValue.Id
+    //% weight=13
+    //% group="Color"
+    export function colorRecognitionCenterValue(data: ColorCenterValue = ColorCenterValue.Id): number {
+        if (data == ColorCenterValue.Confidence) {
+            return colorCenterConfidenceCache;
+        }
+        return colorCenterIdCache;
     }
 
     //% block="refresh line recognition result"
