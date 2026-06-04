@@ -18,6 +18,7 @@ namespace AIcamera {
     const UART_CMD_WIFI_STATUS_QUERY = 0x42;
     const UART_CMD_WIFI_MAILBOX_ACK = 0x43;
     const UART_CMD_COLOR_MODE = 0x44;
+    const UART_CMD_OCR_REGION = 0x45;
 
     const REG_APP_ID = 0;
     const REG_RESULT_BASE = 100;
@@ -77,8 +78,7 @@ namespace AIcamera {
     const WIFI_FLAG_BUSY = 0x08;
     const WIFI_VALID_FLAGS_MASK = WIFI_FLAG_WIFI_LINK | WIFI_FLAG_IP_READY | WIFI_FLAG_PUBLIC_READY | WIFI_FLAG_BUSY;
 
-    const INIT_IIC_MAX_RETRY = 3;
-    const INIT_IIC_ATTEMPT_TIMEOUT_MS = 300;
+    const INIT_IIC_TIMEOUT_MS = 990;
     const INIT_IIC_POLL_INTERVAL_MS = 20;
 
     let deviceAddr = UDEV_DEVICE_ADDR_DEFAULT;
@@ -513,6 +513,17 @@ namespace AIcamera {
         return ((buf[offset + 1] & 0xFF) << 8) | (buf[offset] & 0xFF);
     }
 
+    function clampU16(v: number): number {
+        let x = v | 0;
+        if (x < 0) {
+            x = 0;
+        }
+        if (x > 65535) {
+            x = 65535;
+        }
+        return x;
+    }
+
     function i16le(buf: Buffer, offset: number): number {
         let value = u16le(buf, offset);
         if (value >= 0x8000) {
@@ -631,6 +642,31 @@ namespace AIcamera {
         }
         const frame = buildUartFrame(command, payload);
         return writeUartFrame(frame);
+    }
+
+    function sendUartCommandBuffer(command: number, payload: Buffer): boolean {
+        const frame = buildUartFrame(command, payload);
+        return writeUartFrame(frame);
+    }
+
+    function putU16le(buf: Buffer, offset: number, value: number): void {
+        const v = clampU16(value);
+        buf[offset] = v & 0xFF;
+        buf[offset + 1] = (v >> 8) & 0xFF;
+    }
+
+    function sendOcrRegion(x1: number, y1: number, x2: number, y2: number): boolean {
+        const payload = pins.createBuffer(9);
+        payload[0] = 1;
+        putU16le(payload, 1, minNumber(maxNumber(0, x1 | 0), 480));
+        putU16le(payload, 3, minNumber(maxNumber(0, y1 | 0), 640));
+        putU16le(payload, 5, minNumber(maxNumber(0, x2 | 0), 480));
+        putU16le(payload, 7, minNumber(maxNumber(0, y2 | 0), 640));
+        return sendUartCommandBuffer(UART_CMD_OCR_REGION, payload);
+    }
+
+    function clearOcrRegionInternal(): boolean {
+        return sendUartCommandArray(UART_CMD_OCR_REGION, [0]);
     }
 
     function regReadOnce(addr: number, length: number): Buffer {
@@ -1099,30 +1135,6 @@ namespace AIcamera {
             const id = cur[0] & 0xFF;
             if (updateCurrentModeById(id)) {
                 cameraOnline = true;
-                return true;
-            }
-        }
-        markCameraOffline();
-        return false;
-    }
-
-    function probeCameraWithTimeout(attemptTimeoutMs: number): boolean {
-        const timeout = maxNumber(1, attemptTimeoutMs | 0);
-        const interval = maxNumber(1, INIT_IIC_POLL_INTERVAL_MS | 0);
-        const deadline = input.runningTime() + timeout;
-
-        while (input.runningTime() < deadline) {
-            if (probeCamera(1)) {
-                return true;
-            }
-            basic.pause(interval);
-        }
-        return false;
-    }
-
-    function probeCameraInit(): boolean {
-        for (let i = 0; i < INIT_IIC_MAX_RETRY; i++) {
-            if (probeCameraWithTimeout(INIT_IIC_ATTEMPT_TIMEOUT_MS)) {
                 return true;
             }
         }
@@ -1894,7 +1906,15 @@ namespace AIcamera {
         deviceAddr = UDEV_DEVICE_ADDR_DEFAULT;
         iicInitDone = true;
         cameraOnline = false;
-        probeCameraInit();
+        const timeout = input.runningTime();
+        while (!probeCamera(1)) {
+            if (input.runningTime() - timeout > INIT_IIC_TIMEOUT_MS) {
+                while (true) {
+                    basic.showString("Init AIcamera Error!");
+                }
+            }
+            basic.pause(INIT_IIC_POLL_INTERVAL_MS);
+        }
     }
 
     //% block="set device i2c address %addr"
@@ -2972,6 +2992,50 @@ namespace AIcamera {
         if (!isCameraReady()) {
             return;
         }
+        refreshOcrResultInternal();
+    }
+
+    //% block="define OCR recognition region x1 %x1 y1 %y1 x2 %x2 y2 %y2"
+    //% x1.min=0 x1.max=480 x1.defl=0
+    //% y1.min=0 y1.max=640 y1.defl=0
+    //% x2.min=0 x2.max=480 x2.defl=480
+    //% y2.min=0 y2.max=640 y2.defl=640
+    //% weight=34
+    //% group="OCR"
+    export function drawOcrRegion(x1: number = 0, y1: number = 0, x2: number = 480, y2: number = 640): void {
+        if (!isCameraReady()) {
+            return;
+        }
+
+        const modeId = detectModeIdFromDevice();
+        if (modeId != (AppMode.McOcr as number)) {
+            if (!switchModeInternal(AppMode.McOcr, 2, 6000)) {
+                return;
+            }
+        }
+
+        sendOcrRegion(x1, y1, x2, y2);
+        basic.pause(30);
+        refreshOcrResultInternal();
+    }
+
+    //% block="clear OCR recognition region"
+    //% weight=33
+    //% group="OCR"
+    export function clearOcrRegion(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+
+        const modeId = detectModeIdFromDevice();
+        if (modeId != (AppMode.McOcr as number)) {
+            if (!switchModeInternal(AppMode.McOcr, 2, 6000)) {
+                return;
+            }
+        }
+
+        clearOcrRegionInternal();
+        basic.pause(30);
         refreshOcrResultInternal();
     }
 

@@ -154,6 +154,8 @@
     "AIcamera.detectedLine|block": "巡线识别检测到线",
     "AIcamera.lineDirection|block": "识别到向 %direction 偏移的黑线",
     "AIcamera.lineValue|block": "获取巡线识别的 %data 值",
+    "AIcamera.drawOcrRegion|block": "定义OCR识别框x1 %x1 y1 %y1 x2 %x2 y2 %y2",
+    "AIcamera.clearOcrRegion|block": "清除OCR识别框",
     "AIcamera.detectedOcrCharacters|block": "OCR识别到字符",
     "AIcamera.ocrText|block": "OCR识别字符数据",
     "AIcamera.ocrValue|block": "获取OCR识别的 %data 值",
