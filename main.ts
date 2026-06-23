@@ -41,12 +41,16 @@ namespace AIcamera {
     const EXPRESSION_MAX_FACES = 10;
     const EXPRESSION_MAX_LABEL_BYTES = 12;
     const EXPRESSION_RESULT_MAX_LEN = EXPRESSION_RESULT_HEAD_LEN + EXPRESSION_MAX_FACES * (EXPRESSION_RECORD_HEAD_LEN + EXPRESSION_MAX_LABEL_BYTES);
-    const POSTURE_RESULT_HEAD_LEN = 2;
-    const POSTURE_TARGET_STRIDE = 11;
-    const POSTURE_RECORD_HEAD_LEN = 12;
-    const POSTURE_MAX_PEOPLE = 10;
-    const POSTURE_MAX_LABEL_BYTES = 12;
-    const POSTURE_RESULT_MAX_LEN = POSTURE_RESULT_HEAD_LEN + POSTURE_MAX_PEOPLE * (POSTURE_RECORD_HEAD_LEN + POSTURE_MAX_LABEL_BYTES);
+    const POSTURE_PACKET_VERSION = 0x02;
+    const POSTURE_STATUS_VALID = 0x01;
+    const POSTURE_RESULT_HEAD_LEN = 4;
+    const POSTURE_TARGET_STRIDE = 79;
+    const POSTURE_RECORD_HEAD_LEN = 11;
+    const POSTURE_MAX_PEOPLE = 3;
+    const POSTURE_RESULT_MAX_LEN = POSTURE_RESULT_HEAD_LEN + POSTURE_MAX_PEOPLE * POSTURE_TARGET_STRIDE;
+    const POSTURE_INVALID_COORD = 0xFFFF;
+    const POSTURE_SCREEN_CENTER_X = 320;
+    const POSTURE_SCREEN_CENTER_Y = 240;
     const COLOR_MODE_LEARN = 0;
     const COLOR_MODE_RECOGNIZE = 1;
     const COLOR_LEARN_RESULT_HEAD_LEN = 3;
@@ -133,10 +137,10 @@ namespace AIcamera {
     let expressionRecordCountCache = 0;
     let expressionTargetsCache = pins.createBuffer(0);
     let expressionLabelsCache: string[] = [];
+    let postureStatusCache = 0;
     let postureCountCache = 0;
     let postureRecordCountCache = 0;
     let postureTargetsCache = pins.createBuffer(0);
-    let postureLabelsCache: string[] = [];
     let colorModeCache = COLOR_MODE_LEARN;
     let colorCountCache = 0;
     let colorRecordCountCache = 0;
@@ -355,18 +359,88 @@ namespace AIcamera {
     }
 
     export enum PostureValue {
-        //% block="x coordinate"
-        X = 0,
-        //% block="y coordinate"
-        Y = 1,
         //% block="id"
-        Id = 2,
+        Id = 0,
+        //% block="posture id"
+        PoseId = 1,
         //% block="confidence"
-        Confidence = 3,
+        Confidence = 2,
+        //% block="center x"
+        X = 3,
+        //% block="center y"
+        Y = 4,
         //% block="width"
-        Width = 4,
+        Width = 5,
         //% block="height"
-        Height = 5,
+        Height = 6,
+        //% block="nose x"
+        NoseX = 7,
+        //% block="nose y"
+        NoseY = 8,
+        //% block="left eye x"
+        LeftEyeX = 9,
+        //% block="left eye y"
+        LeftEyeY = 10,
+        //% block="right eye x"
+        RightEyeX = 11,
+        //% block="right eye y"
+        RightEyeY = 12,
+        //% block="left ear x"
+        LeftEarX = 13,
+        //% block="left ear y"
+        LeftEarY = 14,
+        //% block="right ear x"
+        RightEarX = 15,
+        //% block="right ear y"
+        RightEarY = 16,
+        //% block="left shoulder x"
+        LeftShoulderX = 17,
+        //% block="left shoulder y"
+        LeftShoulderY = 18,
+        //% block="right shoulder x"
+        RightShoulderX = 19,
+        //% block="right shoulder y"
+        RightShoulderY = 20,
+        //% block="left elbow x"
+        LeftElbowX = 21,
+        //% block="left elbow y"
+        LeftElbowY = 22,
+        //% block="right elbow x"
+        RightElbowX = 23,
+        //% block="right elbow y"
+        RightElbowY = 24,
+        //% block="left wrist x"
+        LeftWristX = 25,
+        //% block="left wrist y"
+        LeftWristY = 26,
+        //% block="right wrist x"
+        RightWristX = 27,
+        //% block="right wrist y"
+        RightWristY = 28,
+        //% block="left buttock x"
+        LeftButtockX = 29,
+        //% block="left buttock y"
+        LeftButtockY = 30,
+        //% block="right buttock x"
+        RightButtockX = 31,
+        //% block="right buttock y"
+        RightButtockY = 32,
+        //% block="left knee x"
+        LeftKneeX = 33,
+        //% block="left knee y"
+        LeftKneeY = 34,
+        //% block="right knee x"
+        RightKneeX = 35,
+        //% block="right knee y"
+        RightKneeY = 36,
+        //% block="left ankle x"
+        LeftAnkleX = 37,
+        //% block="left ankle y"
+        LeftAnkleY = 38,
+        //% block="right ankle x"
+        RightAnkleX = 39,
+        //% block="right ankle y"
+        RightAnkleY = 40,
     }
 
     export enum PostureType {
@@ -1489,52 +1563,39 @@ namespace AIcamera {
             return false;
         }
 
-        postureCountCache = raw[0] & 0xFF;
-        let recordCount = raw[1] & 0xFF;
+        if ((raw[0] & 0xFF) != POSTURE_PACKET_VERSION) {
+            postureStatusCache = 0;
+            postureCountCache = 0;
+            postureRecordCountCache = 0;
+            postureTargetsCache = pins.createBuffer(0);
+            return false;
+        }
+
+        postureStatusCache = raw[1] & 0xFF;
+        postureCountCache = postureStatusCache == POSTURE_STATUS_VALID ? (raw[2] & 0xFF) : 0;
+        let recordCount = raw[3] & 0xFF;
         recordCount = minNumber(recordCount, postureCountCache);
         recordCount = minNumber(recordCount, POSTURE_MAX_PEOPLE);
 
         const targets = pins.createBuffer(recordCount * POSTURE_TARGET_STRIDE);
-        const labels: string[] = [];
         let offset = POSTURE_RESULT_HEAD_LEN;
         let parsedCount = 0;
 
         for (let i = 0; i < recordCount; i++) {
-            if (offset + POSTURE_RECORD_HEAD_LEN > raw.length) {
+            if (offset + POSTURE_TARGET_STRIDE > raw.length) {
                 break;
             }
 
             const out = parsedCount * POSTURE_TARGET_STRIDE;
-            targets[out] = raw[offset] & 0xFF;
-            targets[out + 1] = raw[offset + 1] & 0xFF;
-            targets[out + 2] = raw[offset + 2] & 0xFF;
-            targets[out + 3] = raw[offset + 3] & 0xFF;
-            targets[out + 4] = raw[offset + 4] & 0xFF;
-            targets[out + 5] = raw[offset + 5] & 0xFF;
-            targets[out + 6] = raw[offset + 6] & 0xFF;
-            targets[out + 7] = raw[offset + 7] & 0xFF;
-            targets[out + 8] = raw[offset + 8] & 0xFF;
-            targets[out + 9] = raw[offset + 9] & 0xFF;
-            targets[out + 10] = raw[offset + 10] & 0xFF;
-
-            let labelLen = raw[offset + 11] & 0xFF;
-            if (labelLen > POSTURE_MAX_LABEL_BYTES) {
-                labelLen = POSTURE_MAX_LABEL_BYTES;
+            for (let j = 0; j < POSTURE_TARGET_STRIDE; j++) {
+                targets[out + j] = raw[offset + j] & 0xFF;
             }
-            offset += POSTURE_RECORD_HEAD_LEN;
-
-            if (offset + labelLen > raw.length) {
-                break;
-            }
-
-            labels.push(labelLen > 0 ? utf8DecodePart(raw, offset, labelLen) : "");
-            offset += labelLen;
+            offset += POSTURE_TARGET_STRIDE;
             parsedCount += 1;
         }
 
         postureRecordCountCache = parsedCount;
         postureTargetsCache = targets;
-        postureLabelsCache = labels;
         return true;
     }
 
@@ -1695,12 +1756,91 @@ namespace AIcamera {
         return (index - 1) * EXPRESSION_TARGET_STRIDE;
     }
 
-    function postureTargetOffset(postureIndex: number): number {
-        let index = postureIndex | 0;
-        if (index < 1 || index > postureRecordCountCache) {
+    function postureTargetOffsetById(personId: number): number {
+        const id = personId | 0;
+        if (id < 1) {
             return -1;
         }
-        return (index - 1) * POSTURE_TARGET_STRIDE;
+        for (let i = 0; i < postureRecordCountCache; i++) {
+            const offset = i * POSTURE_TARGET_STRIDE;
+            if ((postureTargetsCache[offset] & 0xFF) == id) {
+                return offset;
+            }
+        }
+        return -1;
+    }
+
+    function nearestPostureTargetOffset(): number {
+        let bestOffset = -1;
+        let bestDistance2 = 0;
+        for (let i = 0; i < postureRecordCountCache; i++) {
+            const offset = i * POSTURE_TARGET_STRIDE;
+            const centerX = postureCoordValue(offset + 3);
+            const centerY = postureCoordValue(offset + 5);
+            if (centerX < 0 || centerY < 0) {
+                continue;
+            }
+            const dx = centerX - POSTURE_SCREEN_CENTER_X;
+            const dy = centerY - POSTURE_SCREEN_CENTER_Y;
+            const distance2 = dx * dx + dy * dy;
+            if (bestOffset < 0 || distance2 < bestDistance2) {
+                bestOffset = offset;
+                bestDistance2 = distance2;
+            }
+        }
+        return bestOffset;
+    }
+
+    function postureCoordValue(offset: number): number {
+        const value = u16le(postureTargetsCache, offset);
+        return value == POSTURE_INVALID_COORD ? -1 : value;
+    }
+
+    function postureKeypointOffset(data: PostureValue): number {
+        const value = data as number;
+        if (value < (PostureValue.NoseX as number) || value > (PostureValue.RightAnkleY as number)) {
+            return -1;
+        }
+        return POSTURE_RECORD_HEAD_LEN + (value - (PostureValue.NoseX as number)) * 2;
+    }
+
+    function postureValueAt(offset: number, data: PostureValue): number {
+        if (offset < 0) {
+            return -1;
+        }
+        if (data == PostureValue.Id) {
+            return postureTargetsCache[offset] & 0xFF;
+        }
+        if (data == PostureValue.PoseId) {
+            return postureTargetsCache[offset + 1] & 0xFF;
+        }
+        if (data == PostureValue.Confidence) {
+            return minNumber((postureTargetsCache[offset + 2] & 0xFF) / 100.0, 1.0);
+        }
+        if (data == PostureValue.X) {
+            return postureCoordValue(offset + 3);
+        }
+        if (data == PostureValue.Y) {
+            return postureCoordValue(offset + 5);
+        }
+        if (data == PostureValue.Width) {
+            return postureCoordValue(offset + 7);
+        }
+        if (data == PostureValue.Height) {
+            return postureCoordValue(offset + 9);
+        }
+        const keypointOffset = postureKeypointOffset(data);
+        if (keypointOffset < 0) {
+            return -1;
+        }
+        return postureCoordValue(offset + keypointOffset);
+    }
+
+    function postureNameAt(offset: number): string {
+        if (offset < 0) {
+            return "";
+        }
+        return postureTypeName((postureTargetsCache[offset + 1] & 0xFF) as PostureType);
     }
 
     function colorTargetOffset(colorIndex: number): number {
@@ -2771,61 +2911,61 @@ namespace AIcamera {
         return postureCountCache;
     }
 
-    //% block="posture recognition posture %postureIndex name"
-    //% postureIndex.min=1 postureIndex.max=10 postureIndex.defl=1
+    //% block="ID %id posture recognition name"
+    //% id.min=1 id.max=255 id.defl=1
     //% weight=17
     //% group="Posture"
-    export function postureRecognitionName(postureIndex: number = 1): string {
-        const offset = postureTargetOffset(postureIndex);
-        const index = (postureIndex | 0) - 1;
-        if (offset < 0 || index < 0 || index >= postureLabelsCache.length) {
-            return "";
-        }
-        return postureLabelsCache[index];
+    export function postureRecognitionName(id: number = 1): string {
+        return postureNameAt(postureTargetOffsetById(id));
     }
 
-    //% block="detected posture recognition posture %postureIndex is %posture"
-    //% postureIndex.min=1 postureIndex.max=10 postureIndex.defl=1
-    //% posture.defl=PostureType.Standing
+    //% block="nearest center posture recognition name"
     //% weight=16
     //% group="Posture"
-    export function detectedPosture(postureIndex: number = 1, posture: PostureType = PostureType.Standing): boolean {
-        const offset = postureTargetOffset(postureIndex);
+    export function nearestPostureRecognitionName(): string {
+        return postureNameAt(nearestPostureTargetOffset());
+    }
+
+    //% block="ID %id posture recognition is %posture"
+    //% id.min=1 id.max=255 id.defl=1
+    //% posture.defl=PostureType.Standing
+    //% weight=15
+    //% group="Posture"
+    export function detectedPosture(id: number = 1, posture: PostureType = PostureType.Standing): boolean {
+        const offset = postureTargetOffsetById(id);
         if (offset < 0) {
             return false;
         }
-        if ((postureTargetsCache[offset + 1] & 0xFF) == postureTypeId(posture)) {
-            return true;
-        }
-        return postureRecognitionName(postureIndex) == postureTypeName(posture);
+        return (postureTargetsCache[offset + 1] & 0xFF) == postureTypeId(posture);
     }
 
-    //% block="get posture recognition posture %postureIndex %data value"
-    //% postureIndex.min=1 postureIndex.max=10 postureIndex.defl=1
-    //% data.defl=PostureValue.X
-    //% weight=15
+    //% block="nearest center posture recognition is %posture"
+    //% posture.defl=PostureType.Standing
+    //% weight=14
     //% group="Posture"
-    export function postureRecognitionValue(postureIndex: number = 1, data: PostureValue = PostureValue.X): number {
-        const offset = postureTargetOffset(postureIndex);
+    export function detectedNearestPosture(posture: PostureType = PostureType.Standing): boolean {
+        const offset = nearestPostureTargetOffset();
         if (offset < 0) {
-            return 0;
+            return false;
         }
-        if (data == PostureValue.X) {
-            return u16le(postureTargetsCache, offset + 3);
-        }
-        if (data == PostureValue.Y) {
-            return u16le(postureTargetsCache, offset + 5);
-        }
-        if (data == PostureValue.Id) {
-            return postureTargetsCache[offset] & 0xFF;
-        }
-        if (data == PostureValue.Confidence) {
-            return minNumber((postureTargetsCache[offset + 2] & 0xFF) / 100.0, 1.0);
-        }
-        if (data == PostureValue.Width) {
-            return u16le(postureTargetsCache, offset + 7);
-        }
-        return u16le(postureTargetsCache, offset + 9);
+        return (postureTargetsCache[offset + 1] & 0xFF) == postureTypeId(posture);
+    }
+
+    //% block="ID %id posture recognition info %data"
+    //% id.min=1 id.max=255 id.defl=1
+    //% data.defl=PostureValue.X
+    //% weight=13
+    //% group="Posture"
+    export function postureRecognitionValue(id: number = 1, data: PostureValue = PostureValue.X): number {
+        return postureValueAt(postureTargetOffsetById(id), data);
+    }
+
+    //% block="nearest center posture recognition info %data"
+    //% data.defl=PostureValue.X
+    //% weight=12
+    //% group="Posture"
+    export function nearestPostureRecognitionValue(data: PostureValue = PostureValue.X): number {
+        return postureValueAt(nearestPostureTargetOffset(), data);
     }
 
     //% block="set color recognition mode to %mode"
