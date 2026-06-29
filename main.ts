@@ -274,7 +274,7 @@ namespace AIcamera {
         Id = 0,
         //% block="confidence"
         Confidence = 1,
-        //% block="pose confidence"
+        //% block="hand confidence"
         PoseConfidence = 2,
     }
 

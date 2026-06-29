@@ -34,7 +34,7 @@
     "AIcamera.SelfLearnValue.Confidence|block": "置信度",
     "AIcamera.HandValue.Id|block": "ID",
     "AIcamera.HandValue.Confidence|block": "置信度",
-    "AIcamera.HandValue.PoseConfidence|block": "姿态置信度",
+    "AIcamera.HandValue.PoseConfidence|block": "手部置信度",
     "AIcamera.SoundTouchValue.Status|block": "状态",
     "AIcamera.SoundTouchValue.Bpm|block": "BPM",
     "AIcamera.SoundTouchValue.BeatCount|block": "拍数",
