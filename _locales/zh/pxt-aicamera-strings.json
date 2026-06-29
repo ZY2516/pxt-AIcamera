@@ -166,7 +166,7 @@
     "AIcamera.objectRecognitionCount|block": "物体识别对象数量",
     "AIcamera.objectRecognitionName|block": "物体识别第 %objectIndex 个对象名字",
     "AIcamera.objectRecognitionValue|block": "获取物体识别第 %objectIndex 个对象的 %data 值",
-    "AIcamera.detectedObjectTracking|block": "物体追踪检测到目标",
+    "AIcamera.detectedObjectTracking|block": "物体追踪正在追踪目标",
     "AIcamera.objectTrackingLost|block": "物体追踪目标丢失",
     "AIcamera.objectTrackingValue|block": "获取物体追踪目标的 %data 值",
     "AIcamera.detectedExpressionRecognition|block": "表情识别检测到人脸",
