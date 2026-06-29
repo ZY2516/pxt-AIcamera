@@ -84,6 +84,8 @@ namespace AIcamera {
 
     const INIT_IIC_TIMEOUT_MS = 990;
     const INIT_IIC_POLL_INTERVAL_MS = 20;
+    const CAMERA_OFFLINE_FAIL_LIMIT = 3;
+    const CAMERA_RECOVERY_PROBE_INTERVAL_MS = 200;
 
     let deviceAddr = UDEV_DEVICE_ADDR_DEFAULT;
 
@@ -91,6 +93,8 @@ namespace AIcamera {
     let ioGapMs = 1;
     let iicInitDone = false;
     let cameraOnline = false;
+    let cameraReadFailCount = 0;
+    let cameraLastRecoveryProbeMs = 0;
 
     let faceStatusCache = 0;
     let faceStateCache = 0;
@@ -1195,12 +1199,32 @@ namespace AIcamera {
         return false;
     }
 
+    function markCameraOnline(): void {
+        cameraOnline = true;
+        cameraReadFailCount = 0;
+    }
+
     function markCameraOffline(): void {
-        cameraOnline = false;
+        cameraReadFailCount += 1;
+        if (cameraReadFailCount >= CAMERA_OFFLINE_FAIL_LIMIT) {
+            cameraOnline = false;
+        }
     }
 
     function isCameraReady(): boolean {
-        return iicInitDone && cameraOnline;
+        if (!iicInitDone) {
+            return false;
+        }
+        if (cameraOnline) {
+            return true;
+        }
+
+        const now = input.runningTime();
+        if (now - cameraLastRecoveryProbeMs < CAMERA_RECOVERY_PROBE_INTERVAL_MS) {
+            return false;
+        }
+        cameraLastRecoveryProbeMs = now;
+        return probeCamera(3);
     }
 
     function probeCamera(retry: number = 2): boolean {
@@ -1208,7 +1232,7 @@ namespace AIcamera {
         if (cur && cur.length >= 1) {
             const id = cur[0] & 0xFF;
             if (updateCurrentModeById(id)) {
-                cameraOnline = true;
+                markCameraOnline();
                 return true;
             }
         }
@@ -1225,7 +1249,7 @@ namespace AIcamera {
         if (cur && cur.length >= 1) {
             const id = cur[0] & 0xFF;
             if (updateCurrentModeById(id)) {
-                cameraOnline = true;
+                markCameraOnline();
                 return id;
             }
         }
@@ -1242,7 +1266,7 @@ namespace AIcamera {
         if (cur && cur.length >= 1) {
             const id = cur[0] & 0xFF;
             if (updateCurrentModeById(id)) {
-                cameraOnline = true;
+                markCameraOnline();
                 return id;
             }
         }
@@ -2046,6 +2070,8 @@ namespace AIcamera {
         deviceAddr = UDEV_DEVICE_ADDR_DEFAULT;
         iicInitDone = true;
         cameraOnline = false;
+        cameraReadFailCount = 0;
+        cameraLastRecoveryProbeMs = 0;
         const timeout = input.runningTime();
         while (!probeCamera(1)) {
             if (input.runningTime() - timeout > INIT_IIC_TIMEOUT_MS) {
@@ -2066,6 +2092,8 @@ namespace AIcamera {
         deviceAddr = normalizeAddr7(addr);
         iicInitDone = false;
         cameraOnline = false;
+        cameraReadFailCount = 0;
+        cameraLastRecoveryProbeMs = 0;
     }
 
     //% block="set i2c address %addr"
