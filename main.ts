@@ -59,6 +59,9 @@ namespace AIcamera {
     const COLOR_MAX_TARGETS = 10;
     const COLOR_MAX_LABEL_BYTES = 12;
     const COLOR_RESULT_MAX_LEN = COLOR_LEARN_RESULT_HEAD_LEN + COLOR_MAX_TARGETS * (COLOR_LEARN_RECORD_HEAD_LEN + COLOR_MAX_LABEL_BYTES);
+    const CARD_RESULT_HEAD_LEN = 2;
+    const CARD_TARGET_STRIDE = 8;
+    const CARD_MAX_TARGETS = 16;
 
     const SOUND_CTRL_CMD_START = 0x01;
     const SOUND_CTRL_CMD_STOP = 0x02;
@@ -153,6 +156,9 @@ namespace AIcamera {
     let colorCenterIdCache = 0;
     let colorCenterConfidenceCache = 0;
     let colorCenterNameCache = "";
+    let cardCountCache = 0;
+    let cardRecordCountCache = 0;
+    let cardTargetsCache = pins.createBuffer(0);
     let lineDetectedCache = 0;
     let lineDirectionCache = 0;
     let lineResultCache = pins.createBuffer(LINE_RESULT_LEN);
@@ -202,6 +208,8 @@ namespace AIcamera {
         PostureRecognition = 0x24,
         //% block="color recognition"
         ColorRecognition = 0x25,
+        //% block="card recognition"
+        CardRecognition = 0x26,
     }
 
     export enum RgbColor {
@@ -501,6 +509,176 @@ namespace AIcamera {
         Id = 0,
         //% block="confidence"
         Confidence = 1,
+    }
+
+    export enum NumberCard {
+        //% block="0"
+        Zero = 0,
+        //% block="1"
+        One = 1,
+        //% block="2"
+        Two = 2,
+        //% block="3"
+        Three = 3,
+        //% block="4"
+        Four = 4,
+        //% block="5"
+        Five = 5,
+        //% block="6"
+        Six = 6,
+        //% block="7"
+        Seven = 7,
+        //% block="8"
+        Eight = 8,
+        //% block="9"
+        Nine = 9,
+    }
+
+    export enum LetterCard {
+        //% block="A"
+        A = 10,
+        //% block="B"
+        B = 11,
+        //% block="C"
+        C = 12,
+        //% block="D"
+        D = 13,
+        //% block="E"
+        E = 14,
+    }
+
+    export enum TrafficCard {
+        //% block="forward"
+        Front = 15,
+        //% block="turn around"
+        Back = 16,
+        //% block="left"
+        Left = 17,
+        //% block="right"
+        Right = 18,
+        //% block="stop"
+        Stop = 19,
+    }
+
+    export enum GeneralCard {
+        //% block="cat"
+        Cat = 20,
+        //% block="dog"
+        Dog = 21,
+        //% block="mouse"
+        Mouse = 22,
+        //% block="apple"
+        Apple = 23,
+        //% block="pear"
+        Pear = 24,
+        //% block="grapes"
+        Grapes = 25,
+        //% block="airplane"
+        Airplane = 26,
+        //% block="car"
+        Car = 27,
+        //% block="ship"
+        Ship = 28,
+        //% block="pen"
+        Pen = 29,
+        //% block="ruler"
+        Ruler = 30,
+        //% block="microbit"
+        Microbit = 31,
+        //% block="clock"
+        Clock = 32,
+        //% block="cup"
+        Cup = 33,
+        //% block="umbrella"
+        Umbrella = 34,
+    }
+
+    export enum CardSelection {
+        //% block="largest"
+        Largest = 255,
+        //% block="0"
+        Zero = 0,
+        //% block="1"
+        One = 1,
+        //% block="2"
+        Two = 2,
+        //% block="3"
+        Three = 3,
+        //% block="4"
+        Four = 4,
+        //% block="5"
+        Five = 5,
+        //% block="6"
+        Six = 6,
+        //% block="7"
+        Seven = 7,
+        //% block="8"
+        Eight = 8,
+        //% block="9"
+        Nine = 9,
+        //% block="A"
+        A = 10,
+        //% block="B"
+        B = 11,
+        //% block="C"
+        C = 12,
+        //% block="D"
+        D = 13,
+        //% block="E"
+        E = 14,
+        //% block="forward"
+        Front = 15,
+        //% block="turn around"
+        Back = 16,
+        //% block="left"
+        Left = 17,
+        //% block="right"
+        Right = 18,
+        //% block="stop"
+        Stop = 19,
+        //% block="cat"
+        Cat = 20,
+        //% block="dog"
+        Dog = 21,
+        //% block="mouse"
+        Mouse = 22,
+        //% block="apple"
+        Apple = 23,
+        //% block="pear"
+        Pear = 24,
+        //% block="grapes"
+        Grapes = 25,
+        //% block="airplane"
+        Airplane = 26,
+        //% block="car"
+        Car = 27,
+        //% block="ship"
+        Ship = 28,
+        //% block="pen"
+        Pen = 29,
+        //% block="ruler"
+        Ruler = 30,
+        //% block="microbit"
+        Microbit = 31,
+        //% block="clock"
+        Clock = 32,
+        //% block="cup"
+        Cup = 33,
+        //% block="umbrella"
+        Umbrella = 34,
+    }
+
+    export enum CardValue {
+        //% block="x coordinate"
+        X = 0,
+        //% block="y coordinate"
+        Y = 1,
+        //% block="size"
+        Size = 2,
+        //% block="confidence"
+        Confidence = 3,
+        //% block="card id"
+        CardId = 4,
     }
 
     export enum LineDirection {
@@ -1123,6 +1301,9 @@ namespace AIcamera {
         if (mode == AppMode.ColorRecognition) {
             return "color";
         }
+        if (mode == AppMode.CardRecognition) {
+            return "card";
+        }
         return "unknown";
     }
 
@@ -1194,6 +1375,10 @@ namespace AIcamera {
         }
         if (id == (AppMode.ColorRecognition as number)) {
             currentMode = AppMode.ColorRecognition;
+            return true;
+        }
+        if (id == (AppMode.CardRecognition as number)) {
+            currentMode = AppMode.CardRecognition;
             return true;
         }
         return false;
@@ -1457,6 +1642,27 @@ namespace AIcamera {
             targets[i] = raw[BALL_RESULT_HEAD_LEN + i] & 0xFF;
         }
         ballTargetsCache = targets;
+        return true;
+    }
+
+    function parseCardPacket(raw: Buffer): boolean {
+        if (!raw || raw.length < CARD_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        cardCountCache = raw[0] & 0xFF;
+        let recordCount = raw[1] & 0xFF;
+        recordCount = minNumber(recordCount, cardCountCache);
+        recordCount = minNumber(recordCount, CARD_MAX_TARGETS);
+        const availableRecords = ((raw.length - CARD_RESULT_HEAD_LEN) / CARD_TARGET_STRIDE) | 0;
+        recordCount = minNumber(recordCount, availableRecords);
+        cardRecordCountCache = recordCount;
+
+        const targets = pins.createBuffer(recordCount * CARD_TARGET_STRIDE);
+        for (let i = 0; i < targets.length; i++) {
+            targets[i] = raw[CARD_RESULT_HEAD_LEN + i] & 0xFF;
+        }
+        cardTargetsCache = targets;
         return true;
     }
 
@@ -1756,6 +1962,39 @@ namespace AIcamera {
         return (index - 1) * BALL_TARGET_STRIDE;
     }
 
+    function cardTargetOffset(objectIndex: number): number {
+        let index = objectIndex | 0;
+        if (index < 1 || index > cardRecordCountCache) {
+            return -1;
+        }
+        return (index - 1) * CARD_TARGET_STRIDE;
+    }
+
+    function cardOffsetById(cardId: number): number {
+        const wantedId = cardId & 0xFF;
+        for (let i = 0; i < cardRecordCountCache; i++) {
+            const offset = i * CARD_TARGET_STRIDE;
+            if ((cardTargetsCache[offset] & 0xFF) == wantedId) {
+                return offset;
+            }
+        }
+        return -1;
+    }
+
+    function largestCardOffset(): number {
+        let bestOffset = -1;
+        let bestSize = -1;
+        for (let i = 0; i < cardRecordCountCache; i++) {
+            const offset = i * CARD_TARGET_STRIDE;
+            const size = u16le(cardTargetsCache, offset + 6);
+            if (size > bestSize) {
+                bestSize = size;
+                bestOffset = offset;
+            }
+        }
+        return bestOffset;
+    }
+
     function objectTargetIndex(objectIndex: number): number {
         let index = objectIndex | 0;
         if (index < 1 || index > objectRecordCountCache) {
@@ -2012,6 +2251,20 @@ namespace AIcamera {
         return parseBallPacket(raw);
     }
 
+    function refreshCardResultInternal(): boolean {
+        const head = regReadRetry(REG_RESULT_BASE, CARD_RESULT_HEAD_LEN, 2);
+        if (!head || head.length < CARD_RESULT_HEAD_LEN) {
+            return false;
+        }
+
+        let recordCount = head[1] & 0xFF;
+        recordCount = minNumber(recordCount, head[0] & 0xFF);
+        recordCount = minNumber(recordCount, CARD_MAX_TARGETS);
+        const totalLen = CARD_RESULT_HEAD_LEN + recordCount * CARD_TARGET_STRIDE;
+        const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
+        return parseCardPacket(raw);
+    }
+
     function refreshObjectResultInternal(): boolean {
         const raw = regReadBytes(REG_RESULT_BASE, OBJECT_RESULT_MAX_LEN, ioChunk, 3);
         return parseObjectPacket(raw);
@@ -2262,6 +2515,10 @@ namespace AIcamera {
         }
         if (modeId == (AppMode.ColorRecognition as number)) {
             refreshColorResultInternal();
+            return;
+        }
+        if (modeId == (AppMode.CardRecognition as number)) {
+            refreshCardResultInternal();
             return;
         }
     }
@@ -3110,6 +3367,81 @@ namespace AIcamera {
             return colorCenterConfidenceCache;
         }
         return colorCenterIdCache;
+    }
+
+    //% block="refresh card recognition result"
+    //% blockHidden=1
+    //% weight=19
+    //% group="Card"
+    export function refreshCardResult(): void {
+        if (!isCameraReady()) {
+            return;
+        }
+        refreshCardResultInternal();
+    }
+
+    //% block="recognized %card number card"
+    //% card.defl=NumberCard.Zero
+    //% weight=18
+    //% group="Card"
+    export function containsNumberCard(card: NumberCard = NumberCard.Zero): boolean {
+        return cardOffsetById(card as number) >= 0;
+    }
+
+    //% block="recognized %card letter card"
+    //% card.defl=LetterCard.A
+    //% weight=17
+    //% group="Card"
+    export function containsLetterCard(card: LetterCard = LetterCard.A): boolean {
+        return cardOffsetById(card as number) >= 0;
+    }
+
+    //% block="recognized %card traffic sign card"
+    //% card.defl=TrafficCard.Front
+    //% weight=16
+    //% group="Card"
+    export function containsTrafficCard(card: TrafficCard = TrafficCard.Front): boolean {
+        return cardOffsetById(card as number) >= 0;
+    }
+
+    //% block="recognized %card card"
+    //% card.defl=GeneralCard.Mouse
+    //% weight=15
+    //% group="Card"
+    export function containsCard(card: GeneralCard = GeneralCard.Mouse): boolean {
+        return cardOffsetById(card as number) >= 0;
+    }
+
+    //% block="recognized card total count"
+    //% weight=14
+    //% group="Card"
+    export function cardCount(): number {
+        return cardCountCache;
+    }
+
+    //% block="get %card card %data value"
+    //% card.defl=CardSelection.Largest
+    //% data.defl=CardValue.X
+    //% weight=13
+    //% group="Card"
+    export function cardValue(card: CardSelection = CardSelection.Largest, data: CardValue = CardValue.X): number {
+        const offset = card == CardSelection.Largest ? largestCardOffset() : cardOffsetById(card as number);
+        if (offset < 0) {
+            return 0;
+        }
+        if (data == CardValue.X) {
+            return u16le(cardTargetsCache, offset + 2);
+        }
+        if (data == CardValue.Y) {
+            return u16le(cardTargetsCache, offset + 4);
+        }
+        if (data == CardValue.Size) {
+            return u16le(cardTargetsCache, offset + 6);
+        }
+        if (data == CardValue.Confidence) {
+            return minNumber((cardTargetsCache[offset + 1] & 0xFF) / 100.0, 1.0);
+        }
+        return cardTargetsCache[offset] & 0xFF;
     }
 
     //% block="refresh line recognition result"

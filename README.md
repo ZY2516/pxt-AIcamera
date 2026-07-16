@@ -23,15 +23,8 @@ Implemented app modes:
 - `expression recognition (0x23)`
 - `posture recognition (0x24)`
 - `color recognition (0x25)`
+- `card recognition (0x26)`
 
-Not included by design (auth/SN-key related set):
-
-- picture recognition
-- realtime model chat
-- realtime voice dialog
-- sound recognize
-- voice to text
-- text to voice
 
 ## Protocol baseline
 
