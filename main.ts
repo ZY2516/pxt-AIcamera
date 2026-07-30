@@ -1720,7 +1720,6 @@ namespace AIcamera {
 
         trackingCountCache = raw[0] & 0xFF;
         let recordCount = raw[1] & 0xFF;
-        recordCount = minNumber(recordCount, trackingCountCache);
         recordCount = minNumber(recordCount, TRACKING_MAX_TARGETS);
         const availableRecords = ((raw.length - TRACKING_RESULT_HEAD_LEN) / TRACKING_TARGET_STRIDE) | 0;
         recordCount = minNumber(recordCount, availableRecords);
@@ -1732,6 +1731,12 @@ namespace AIcamera {
         }
         trackingTargetsCache = targets;
         return true;
+    }
+
+    function clearTrackingResultCache(): void {
+        trackingCountCache = 0;
+        trackingRecordCountCache = 0;
+        trackingTargetsCache = pins.createBuffer(0);
     }
 
     function parseExpressionPacket(raw: Buffer): boolean {
@@ -2273,15 +2278,19 @@ namespace AIcamera {
     function refreshTrackingResultInternal(): boolean {
         const head = regReadRetry(REG_RESULT_BASE, TRACKING_RESULT_HEAD_LEN, 2);
         if (!head || head.length < TRACKING_RESULT_HEAD_LEN) {
+            clearTrackingResultCache();
             return false;
         }
 
         let recordCount = head[1] & 0xFF;
-        recordCount = minNumber(recordCount, head[0] & 0xFF);
         recordCount = minNumber(recordCount, TRACKING_MAX_TARGETS);
         const totalLen = TRACKING_RESULT_HEAD_LEN + recordCount * TRACKING_TARGET_STRIDE;
         const raw = regReadBytes(REG_RESULT_BASE, totalLen, ioChunk, 3);
-        return parseTrackingPacket(raw);
+        if (!parseTrackingPacket(raw)) {
+            clearTrackingResultCache();
+            return false;
+        }
+        return true;
     }
 
     function refreshExpressionResultInternal(): boolean {
@@ -3048,7 +3057,11 @@ namespace AIcamera {
     //% weight=30
     //% group="Tracking"
     export function detectedObjectTracking(): boolean {
-        return trackingCountCache > 0;
+        if (trackingCountCache <= 0) {
+            return false;
+        }
+        const offset = trackingTargetOffset(1);
+        return offset >= 0 && (trackingTargetsCache[offset + 2] & 0xFF) == 0;
     }
 
     //% block="object tracking target lost"
