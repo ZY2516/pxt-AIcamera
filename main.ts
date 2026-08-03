@@ -132,6 +132,8 @@ namespace AIcamera {
     let ballCountCache = 0;
     let ballRecordCountCache = 0;
     let ballTargetsCache = pins.createBuffer(0);
+    let ballRedDetectedCache = false;
+    let ballBlueDetectedCache = false;
     let objectCountCache = 0;
     let objectRecordCountCache = 0;
     let objectIdsCache = pins.createBuffer(0);
@@ -314,6 +316,13 @@ namespace AIcamera {
         Width = 4,
         //% block="height"
         Height = 5,
+    }
+
+    export enum BallColor {
+        //% block="red"
+        Red = 1,
+        //% block="blue"
+        Blue = 2,
     }
 
     export enum ObjectValue {
@@ -1626,11 +1635,16 @@ namespace AIcamera {
 
     function parseBallPacket(raw: Buffer): boolean {
         if (!raw || raw.length < BALL_RESULT_HEAD_LEN) {
+            ballRedDetectedCache = false;
+            ballBlueDetectedCache = false;
             return false;
         }
 
         ballCountCache = raw[0] & 0xFF;
-        let recordCount = raw[1] & 0xFF;
+        const flags = raw[1] & 0xFF;
+        ballRedDetectedCache = (flags & 0x40) != 0;
+        ballBlueDetectedCache = (flags & 0x80) != 0;
+        let recordCount = flags & 0x1F;
         recordCount = minNumber(recordCount, ballCountCache);
         recordCount = minNumber(recordCount, BALL_MAX_TARGETS);
         const availableRecords = ((raw.length - BALL_RESULT_HEAD_LEN) / BALL_TARGET_STRIDE) | 0;
@@ -2245,10 +2259,12 @@ namespace AIcamera {
     function refreshBallResultInternal(): boolean {
         const head = regReadRetry(REG_RESULT_BASE, BALL_RESULT_HEAD_LEN, 2);
         if (!head || head.length < BALL_RESULT_HEAD_LEN) {
+            ballRedDetectedCache = false;
+            ballBlueDetectedCache = false;
             return false;
         }
 
-        let recordCount = head[1] & 0xFF;
+        let recordCount = head[1] & 0x1F;
         recordCount = minNumber(recordCount, head[0] & 0xFF);
         recordCount = minNumber(recordCount, BALL_MAX_TARGETS);
         const totalLen = BALL_RESULT_HEAD_LEN + recordCount * BALL_TARGET_STRIDE;
@@ -2954,17 +2970,28 @@ namespace AIcamera {
         return ballCountCache > 0;
     }
 
-    //% block="ball recognition total count"
+    //% block="detected %color ball"
+    //% color.defl=BallColor.Red
     //% weight=38
+    //% group="Ball"
+    export function detectedBallColor(color: BallColor = BallColor.Red): boolean {
+        if (color == BallColor.Blue) {
+            return ballBlueDetectedCache;
+        }
+        return ballRedDetectedCache;
+    }
+
+    //% block="ball recognition total count"
+    //% weight=37
     //% group="Ball"
     export function ballCount(): number {
         return ballCountCache;
     }
 
-    //% block="get ball recognition object %objectIndex %data value"
+    //% block="get ball recognition ID (%objectIndex) %data value"
     //% objectIndex.min=1 objectIndex.max=16 objectIndex.defl=1
     //% data.defl=BallValue.X
-    //% weight=37
+    //% weight=36
     //% group="Ball"
     export function ballValue(objectIndex: number = 1, data: BallValue = BallValue.X): number {
         const offset = ballTargetOffset(objectIndex);
